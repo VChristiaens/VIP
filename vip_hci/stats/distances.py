@@ -11,6 +11,7 @@ __all__ = ['cube_distance',
 from astropy.stats import gaussian_fwhm_to_sigma
 import numpy as np
 import scipy.stats
+from scipy.ndimage import gaussian_filter
 from scipy.optimize import curve_fit
 from matplotlib import pyplot as plt
 try:
@@ -101,6 +102,9 @@ def cube_distance(array, frame, mode='full', dist='sad', inradius=None,
         frame_ref = frame_ref[np.where(mask)]
     else:
         raise TypeError('Mode not recognized or missing parameters')
+    if dist == 'ssim': # prepare the images with Gaussian filter before segmentation in annuli
+        frame_ref = gaussian_filter(frame_ref, sigma=1.5)
+        array = gaussian_filter(array, sigma=[0,1.5,1.5])
 
     for i in range(n):
         if mode == 'full':
@@ -123,10 +127,10 @@ def cube_distance(array, frame, mode='full', dist='sad', inradius=None,
             spear, _ = scipy.stats.spearmanr(frame_ref.ravel(), framei.ravel())
             lista.append(spear)
         elif dist == 'ssim':
-            mean_ssim = ssim(frame_ref, framei, win_size=7,
-                             data_range=frame_ref.max() - frame_ref.min(),
-                             gaussian_weights=True, sigma=1.5,
-                             use_sample_covariance=True)
+            # gaussian filter done before => NOW use: win_size=1, uniform filter
+            mean_ssim = ssim(frame_ref, framei, win_size=1,
+                             gaussian_weights=False, 
+                             use_sample_covariance=False)
             lista.append(mean_ssim)
         else:
             raise ValueError('Distance not recognized')

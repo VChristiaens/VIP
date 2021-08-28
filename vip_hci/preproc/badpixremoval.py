@@ -28,6 +28,7 @@ try:
     no_numba = False
 except ImportError:
     msg = "Numba python bindings are missing."
+    msg+= "Consider installing Numba for faster bad pixel correction."
     warnings.warn(msg, ImportWarning)
     no_numba = True
 

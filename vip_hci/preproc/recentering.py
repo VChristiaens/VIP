@@ -45,7 +45,7 @@ from ..var import (get_square, frame_center, get_annulus_segments,
 from ..preproc import cube_crop_frames
 
 
-def frame_shift(array, shift_y, shift_x, imlib='opencv',
+def frame_shift(array, shift_y, shift_x, imlib='opencv', 
                 interpolation='lanczos4', border_mode='reflect'):
     """ Shifts a 2D array by shift_y, shift_x. Boundaries are filled with zeros.
 
@@ -790,8 +790,9 @@ def cube_recenter_radon(array, full_output=False, verbose=True, imlib='opencv',
 def cube_recenter_dft_upsampling(array, center_fr1=None, negative=False,
                                  fwhm=4, subi_size=None, upsample_factor=100,
                                  imlib='opencv', interpolation='lanczos4',
-                                 mask=None, full_output=False, verbose=True, nproc=1,
-                                 save_shifts=False, debug=False, plot=True):
+                                 mask=None, full_output=False, verbose=True, 
+                                 nproc=1, save_shifts=False, debug=False, 
+                                 plot=True):
     """ Recenters a cube of frames using the DFT upsampling method as
     proposed in Guizar et al. 2008 and implemented in the
     ``register_translation`` function from scikit-image.
@@ -877,7 +878,7 @@ def cube_recenter_dft_upsampling(array, center_fr1=None, negative=False,
     if subi_size is not None:
         if center_fr1 is None:
             print('`cx_1` or `cy_1` not be provided')
-            print('Using the coordinated of the 1st frame center for '
+            print('Using the coordinates of the 1st frame center for '
                   'the Gaussian 2d fit')
             cy_1, cx_1 = frame_center(array[0])
         else:

@@ -12,7 +12,7 @@ from ..var import prepare_matrix
 
 
 def cube_subtract_sky_pca(sci_cube, sky_cube, mask, ref_cube=None, ncomp=2,
-                          full_output=False):
+                          full_output=False, svd_mode='lapack'):
     """ PCA-based sky subtraction.
 
     Parameters
@@ -56,7 +56,7 @@ def cube_subtract_sky_pca(sci_cube, sky_cube, mask, ref_cube=None, ncomp=2,
 
     # Getting the EVs from the sky cube
     Msky = prepare_matrix(sky_cube, scaling=None, verbose=False)
-    sky_pcs = svd_wrapper(Msky, 'lapack', sky_cube.shape[0], False)
+    sky_pcs = svd_wrapper(Msky, svd_mode, sky_cube.shape[0], False)
     sky_pcs_cube = sky_pcs.reshape(sky_cube.shape[0], sky_cube.shape[1],
                                    sky_cube.shape[2])
 

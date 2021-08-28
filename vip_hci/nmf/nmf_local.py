@@ -15,7 +15,7 @@ from ..preproc.derotation import (_compute_pa_thresh, _find_indices_adi,
                                   _define_annuli)
 from ..stats import descriptive_stats
 from ..var import (prepare_matrix, reshape_matrix, frame_center, dist,
-                   get_annulus_segments, matrix_scaling)
+                   get_annulus_segments, matrix_scaling, mask_circle)
 from ..conf import timing, time_ini
 from ..conf.utils_conf import pool_map, iterable
 
@@ -26,7 +26,7 @@ def nmf_annular(cube, angle_list, cube_ref=None, radius_int=0, fwhm=4, asize=4,
                 imlib='opencv', interpolation='lanczos4', collapse='median', 
                 full_output=False, verbose=True, theta_init=0, weights=None, 
                 cube_sig=None, handle_neg='mask', max_iter=1000, 
-                random_state=None, **kwargs):
+                random_state=None, edge_blend=None, **kwargs):
     """ Non Negative Matrix Factorization in concentric annuli, for ADI/RDI 
     sequences. Alternative to the annular ADI-PCA processing that does not rely 
     on SVD or ED for obtaining a low-rank approximation of the datacube. 
@@ -107,6 +107,17 @@ def nmf_annular(cube, angle_list, cube_ref=None, radius_int=0, fwhm=4, asize=4,
         intermediate arrays.  
     verbose : {True, False}, bool optional
         If True prints intermediate info and timing. 
+    theta_init : int
+        Initial azimuth [degrees] of the first segment, counting from the
+        positive x-axis counterclockwise (irrelevant if n_segments=1).
+    weights: 1d numpy array or list, optional
+        Weights to be applied for a weighted mean. Need to be provided if
+        collapse mode is 'wmean'.
+    cube_sig: numpy ndarray, opt
+        Cube with estimate of significant authentic signals. If provided, this
+        will be subtracted before projecting cube onto reference cube.
+    edge_blend: str, opt
+        See description of vip_hci.preproc.frame_rotate.
     kwargs 
         Additional arguments for scikit-learn NMF algorithm. See:
         https://scikit-learn.org/stable/modules/generated/sklearn.decomposition.NMF.html             
@@ -122,12 +133,57 @@ def nmf_annular(cube, angle_list, cube_ref=None, radius_int=0, fwhm=4, asize=4,
         global start_time
         start_time = time_ini()
         
-    array = cube
-    if array.ndim != 3:
+    if cube.ndim != 3:
         raise TypeError('Input array is not a cube or 3d array')
-    if array.shape[0] != angle_list.shape[0]:
+    if cube.shape[0] != angle_list.shape[0]:
         raise TypeError('Input vector or parallactic angles has wrong length')
 
+    # added wrapper to incorporate cube_out_fill 
+    if radius_int and edge_blend is None:
+        # run a first time with radius_int=0: used to fill cube_out to avoid
+        # Gibbs artefacts for FFT-based rotation.
+        nasize = int(min((asize/2+radius_int)*2,((cube.shape[-1]-1)/2)-1))
+        res = _nmf_adi_rdi(cube, angle_list, cube_ref, 0, fwhm, nasize, 
+                           n_segments, delta_rot, ncomp, init_svd, nproc, 
+                           min_frames_lib, max_frames_lib, scaling, imlib, 
+                           interpolation,  collapse, True, verbose, theta_init, 
+                           weights, cube_sig, None, handle_neg, max_iter, 
+                           random_state, **kwargs)
+        cube_out_fill, _, _, _, _ = res
+    else:
+        cube_out_fill = None
+        
+    res = _nmf_adi_rdi(cube, angle_list, cube_ref, radius_int, fwhm, asize, 
+                       n_segments, delta_rot, ncomp, init_svd, nproc, 
+                       min_frames_lib, max_frames_lib, scaling, imlib, 
+                       interpolation, collapse, True, verbose, 
+                       theta_init, weights, cube_sig, cube_out_fill, 
+                       handle_neg, max_iter, random_state, **kwargs)
+
+    if radius_int and edge_blend is not None:
+        cube_out, cube_der, cube_recon, H_comps, frame = res
+        cube_out = mask_circle(cube_out, radius_int, np.nan)
+        cube_der = cube_derotate(cube_out, angle_list, imlib=imlib,
+                                 interpolation=interpolation, nproc=nproc,
+                                 edge_blend=edge_blend)
+        frame = cube_collapse(cube_der, mode=collapse, w=weights)
+    else:
+        cube_out, cube_der, cube_recon, H_comps, frame = res
+        
+    if full_output:
+        return cube_out, cube_der, cube_recon, H_comps, frame
+    else:
+        return frame        
+        
+        
+def _nmf_adi_rdi(cube, angle_list, cube_ref=None, radius_int=0, fwhm=4, asize=4, 
+                 n_segments=1, delta_rot=(0.1, 1), ncomp=1, init_svd='nndsvd', 
+                 nproc=1, min_frames_lib=2, max_frames_lib=200, scaling=None, 
+                 imlib='opencv', interpolation='lanczos4', collapse='median', 
+                 full_output=False, verbose=True, theta_init=0, weights=None, 
+                 cube_sig=None, cube_out_fill=None, handle_neg='mask', 
+                 max_iter=1000, random_state=None, **kwargs):
+    array = cube.copy()
     n, y, _ = array.shape
 
     angle_list = check_pa_vector(angle_list)
@@ -168,7 +224,13 @@ def nmf_annular(cube, angle_list, cube_ref=None, radius_int=0, fwhm=4, asize=4,
 
     # The annuli are built, and the corresponding PA thresholds for frame
     # rejection are calculated (at the center of the annulus)
-    cube_out = np.zeros_like(array)
+    if cube_out_fill is not None:
+        cube_out = cube_out_fill.copy()
+    else:
+        cube_out = np.zeros_like(array)
+        cube_out[:] = 0 # for derotation
+        if radius_int>0:
+            cube_out = mask_circle(cube_out, radius_int, np.nan)
     cube_recon = np.zeros_like(array)
     H_comps = np.zeros([ncomp,array.shape[1],array.shape[2]])
     if cube_ref is None:
@@ -241,11 +303,17 @@ def nmf_annular(cube, angle_list, cube_ref=None, radius_int=0, fwhm=4, asize=4,
 
     # Cube is derotated according to the parallactic angle and collapsed
     cube_der = cube_derotate(cube_out, angle_list, imlib=imlib,
-                             interpolation=interpolation)
+                             interpolation=interpolation)        
     frame = cube_collapse(cube_der, mode=collapse, w=weights)
     if verbose:
         print('Done derotating and combining.')
         timing(start_time)
+        
+    if radius_int:
+        cube_der = mask_circle(cube_der, radius_int)
+        cube_out = mask_circle(cube_out, radius_int)
+        frame = mask_circle(frame, radius_int)
+        
     if full_output:
         return cube_out, cube_der, cube_recon, H_comps, frame
     else:

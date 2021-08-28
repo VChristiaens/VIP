@@ -533,7 +533,7 @@ def mask_sources(mask, ap_rad):
     Parameters
     ----------
     mask : numpy ndarray
-        Input mask with zeros at sources center. Mask has to be square.
+        Input binary mask with zeros at sources center. Mask has to be square.
     ap_rad : float
         Size in pixels of the apertures that should be filled with zeros 
         around each source in the mask.

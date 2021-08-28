@@ -384,7 +384,7 @@ def frame_filter_lowpass(array, mode='gauss', median_size=5, fwhm_size=5,
     ----------
     array : numpy ndarray
         Input array, 2d frame.
-    mode : {'median', 'gauss', 'moff', 'psf'}, str optional
+    mode : {'median', 'gauss', 'psf'}, str optional
         Type of low-pass filtering.
     median_size : int, optional
         Size of the median box for filtering the low-pass median filter.
@@ -442,7 +442,7 @@ def frame_filter_lowpass(array, mode='gauss', median_size=5, fwhm_size=5,
                                                         x_size=kernel_sz,
                                                         y_size=kernel_sz),
                                 mask=mask, **kwargs)
-            if iterate and np.sum(np.isnan(filtered))>0:
+            while iterate and np.sum(np.isnan(filtered))>0:
                 filtered = interp_nan(filtered, 
                                       Gaussian2DKernel(x_stddev=sigma, 
                                                        x_size=kernel_sz,
@@ -454,7 +454,7 @@ def frame_filter_lowpass(array, mode='gauss', median_size=5, fwhm_size=5,
                                                             x_size=kernel_sz,
                                                             y_size=kernel_sz),
                                     mask=mask, **kwargs)
-            if iterate and np.sum(np.isnan(filtered))>0:
+            while iterate and np.sum(np.isnan(filtered))>0:
                 filtered = interp_nan(filtered, 
                                       Gaussian2DKernel(x_stddev=sigma, 
                                                        x_size=kernel_sz,

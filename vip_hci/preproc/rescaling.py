@@ -23,10 +23,11 @@ from scipy.ndimage.interpolation import geometric_transform, zoom
 from scipy.optimize import minimize
 from ..var import frame_center, get_square
 from .subsampling import cube_collapse
+from .recentering import frame_shift
 
 
 def cube_px_resampling(array, scale, imlib='opencv', interpolation='lanczos4',
-                       verbose=True):
+                       verbose=True, keep_parity=False, full_output=False):
     """
     Resample the frames of a cube with a single scale factor.
 
@@ -48,6 +49,11 @@ def cube_px_resampling(array, scale, imlib='opencv', interpolation='lanczos4',
         function.
     verbose : bool, optional
         Whether to print out additional info such as the new cube shape.
+    keep_parity: bool, optional
+        Whether to round rescaling to keep the parity (even or odd) of the
+        input cube x,y dimensions.
+    full_output: bool, optional
+        Whether to also return the true scale factor(s) used.
 
     Returns
     -------
@@ -61,7 +67,11 @@ def cube_px_resampling(array, scale, imlib='opencv', interpolation='lanczos4',
     array_resc = []
     for i in range(array.shape[0]):
         imresc = frame_px_resampling(array[i], scale=scale, imlib=imlib,
-                                     interpolation=interpolation)
+                                     interpolation=interpolation, 
+                                     keep_parity=keep_parity, 
+                                     full_output=full_output)
+        if full_output:
+            imresc, t_scale_y, t_scale_x = imresc
         array_resc.append(imresc)
 
     array_resc = np.array(array_resc)
@@ -69,11 +79,15 @@ def cube_px_resampling(array, scale, imlib='opencv', interpolation='lanczos4',
     if verbose:
         print("Cube successfully rescaled")
         print("New shape: {}".format(array_resc.shape))
-    return array_resc
+        
+    if full_output:
+        return array_resc, t_scale_y, t_scale_x
+    else:
+        return array_resc
 
 
 def frame_px_resampling(array, scale, imlib='opencv', interpolation='lanczos4',
-                        verbose=False):
+                        verbose=False, keep_parity=False, full_output=False):
     """
     Resample the pixels of a frame wrt to the center, changing the frame size.
 
@@ -99,6 +113,11 @@ def frame_px_resampling(array, scale, imlib='opencv', interpolation='lanczos4',
         slowest and accurate.
     verbose : bool, optional
         Whether to print out additional info such as the new image shape.
+    keep_parity: bool, optional
+        Whether to round rescaling to keep the parity (even or odd) of the
+        input frame x,y dimensions.
+    full_output: bool, optional
+        Whether to also return the true scale factor(s) used.
 
     Returns
     -------
@@ -158,13 +177,27 @@ def frame_px_resampling(array, scale, imlib='opencv', interpolation='lanczos4',
     else:
         raise ValueError('Image transformation library not recognized')
 
-    array_resc /= scale_y * scale_x
+    if keep_parity:
+        cond1 = array_resc.shape[-2]%2 != array.shape[-2]%2
+        cond2 = array_resc.shape[-1]%2 != array.shape[-1]%2
+        if cond1 or cond2:
+            array_resc = frame_shift(array_resc, cond1*0.5, cond2*0.5)
+        array_resc = array_resc[1:,1:]
+
+    t_scale_y = array_resc.shape[-2]/array.shape[-2]
+    t_scale_x = array_resc.shape[-1]/array.shape[-1]
+    
+    array_resc /= t_scale_y * t_scale_x
 
     if verbose:
         print("Image successfully rescaled")
         print("New shape: {}".format(array_resc.shape))
-
-    return array_resc
+        print("True scale factor used along y and x: {}, {}".format(t_scale_y,
+                                                                    t_scale_x))
+    if full_output:
+        return array_resc, t_scale_y, t_scale_x
+    else:
+        return array_resc
 
 
 def cube_rescaling_wavelengths(cube, scal_list, full_output=True, inverse=False,

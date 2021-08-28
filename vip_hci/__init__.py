@@ -5,6 +5,7 @@ from . import preproc
 from . import conf
 from . import fits
 from . import frdiff
+from . import itpca
 from . import leastsq
 from . import llsg
 from . import medsub
