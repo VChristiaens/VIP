@@ -10,6 +10,7 @@ from . import fm
 from . import metrics
 from . import stats
 from . import var
+from . import greedy
 from .hci_dataset import *
 from .hci_postproc import *
 from .vip_ds9 import *

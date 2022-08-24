@@ -61,7 +61,7 @@ from ..stats import descriptive_stats
 def pca(cube, angle_list, cube_ref=None, scale_list=None, ncomp=1,
         svd_mode='lapack', scaling=None, mask_center_px=None, source_xy=None,
         delta_rot=1, fwhm=4, adimsdi='single', crop_ifs=True, imlib='vip-fft',
-        imlib2='vip-fft', interpolation='lanczos4', collapse='median',
+        imlib2='opencv', interpolation='lanczos4', collapse='median',
         collapse_ifs='mean', ifs_collapse_range='all', mask_rdi=None,
         check_memory=True, batch=None, nproc=1, full_output=False, verbose=True,
         weights=None, conv=False, cube_sig=None, **rot_options):
@@ -365,7 +365,7 @@ def pca(cube, angle_list, cube_ref=None, scale_list=None, ncomp=1,
                                          verbose, start_time, nproc, crop_ifs,
                                          batch, full_output=True,
                                          weights=weights, **rot_options)
-            if isinstance(ncomp, (int, float)):
+            if np.isscalar(ncomp):
                 cube_allfr_residuals, cube_adi_residuals, frame = res_pca
             elif isinstance(ncomp, tuple):
                 if source_xy is None:
@@ -531,7 +531,7 @@ def pca(cube, angle_list, cube_ref=None, scale_list=None, ncomp=1,
 
         elif adimsdi == 'single':
             # ADI+mSDI single-pass PCA
-            if isinstance(ncomp, (float, int)):
+            if np.isscalar(ncomp):
                 if full_output:
                     return frame, cube_allfr_residuals, cube_adi_residuals
                 else:
@@ -962,6 +962,7 @@ def _adimsdi_doublepca_ifs(fr, ncomp, scale_list, scaling, mask_center_px,
                          full_output=False, inverse=True, y_in=y_in, x_in=x_in,
                          imlib=imlib, interpolation=interpolation,
                          collapse=collapse)
+
         if mask_center_px:
             frame_i = mask_circle(frame_i, mask_center_px)
 
@@ -1071,7 +1072,7 @@ def _project_subtract(cube, cube_ref, ncomp, scaling, mask_center_px, svd_mode,
         vectors of the input matrix, as returned by ``svd/svd_wrapper()``
     """
     _, y, x = cube.shape
-    if isinstance(ncomp, int):
+    if np.issubdtype(ncomp, np.integer):
         # if cube_sig is not None:
         #     cube_emp = cube-cube_sig
         # else:
@@ -1093,7 +1094,7 @@ def _project_subtract(cube, cube_ref, ncomp, scaling, mask_center_px, svd_mode,
             ref_lib = prepare_matrix(cube_ref, scaling, mask_center_px,
                                      mode='fullfr', verbose=verbose)
         else:
-            ref_lib = matrix_emp
+            ref_lib = matrix_emp.copy()
 
         # a rotation threshold is used (frames are processed one by one)
         if indices is not None and frame is not None:
@@ -1119,12 +1120,13 @@ def _project_subtract(cube, cube_ref, ncomp, scaling, mask_center_px, svd_mode,
             reconstructed = np.dot(transformed.T, V)
             residuals = matrix - reconstructed
             residuals_res = reshape_matrix(residuals, y, x)
+            
             if full_output:
                 return residuals_res, reconstructed, V
             else:
                 return residuals_res
 
-    elif isinstance(ncomp, float):
+    else:
         if not 1 > ncomp > 0:
             raise ValueError("when `ncomp` is float, it must lie in the "
                              "interval (0,1]")
