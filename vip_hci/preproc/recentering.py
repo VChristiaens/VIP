@@ -256,8 +256,8 @@ def frame_shift(array, shift_y, shift_x, imlib='vip-fft',
     return array_shifted
 
 
-def cube_shift(cube, shift_y, shift_x, imlib='vip-fft',
-               interpolation='lanczos4', border_mode='reflect'):
+def cube_shift(cube, shift_y, shift_x, imlib='vip-fft', 
+               interpolation='lanczos4', border_mode='reflect', nproc=1):
     """ Shifts the X-Y coordinates of a cube or 3D array by x and y values.
 
     Parameters
@@ -273,6 +273,9 @@ def cube_shift(cube, shift_y, shift_x, imlib='vip-fft',
         See the documentation of the ``vip_hci.preproc.frame_shift`` function.
     border_mode : str, optional
         See the documentation of the ``vip_hci.preproc.frame_shift`` function.
+    nproc: int or None, optional
+        Number of CPUs to use for multiprocessing. If None, will be 
+        automatically set to half the number of available CPUs.
 
     Returns
     -------
@@ -283,15 +286,24 @@ def cube_shift(cube, shift_y, shift_x, imlib='vip-fft',
     check_array(cube, dim=3)
 
     nfr = cube.shape[0]
-    cube_out = np.zeros_like(cube)
-    if isinstance(shift_x, (int, float)):
-        shift_x = np.ones((nfr)) * shift_x
-    if isinstance(shift_y, (int, float)):
-        shift_y = np.ones((nfr)) * shift_y
+    if np.isscalar(shift_x):
+        shift_x = np.ones([nfr]) * shift_x
+    if np.isscalar(shift_y):
+        shift_y = np.ones([nfr]) * shift_y
 
-    for i in range(cube.shape[0]):
-        cube_out[i] = frame_shift(cube[i], shift_y[i], shift_x[i], imlib,
-                                  interpolation, border_mode)
+    if nproc is None:
+        nproc = cpu_count()//2
+        
+    if nproc == 1:
+        cube_out = np.zeros_like(cube)
+        for i in range(cube.shape[0]):
+            cube_out[i] = frame_shift(cube[i], shift_y[i], shift_x[i], imlib,
+                                      interpolation, border_mode)
+    elif nproc > 1:
+        res = pool_map(nproc, frame_shift, iterable(cube), iterable(shift_y),
+                       iterable(shift_x), imlib, interpolation, border_mode)
+        cube_out = np.array(res)
+
     return cube_out
 
 
@@ -1176,8 +1188,8 @@ def cube_recenter_dft_upsampling(array, center_fr1=None, negative=False,
     n_frames, sizey, sizex = array.shape
     if subi_size is not None:
         if center_fr1 is None:
-            print('`cx_1` or `cy_1` not be provided')
-            print('Using the coordinated of the 1st frame center for '
+            print('`cx_1` or `cy_1` not provided')
+            print('Using the coordinates of the 1st frame center for '
                   'the Gaussian 2d fit')
             cy_1, cx_1 = frame_center(array[0])
         else:
