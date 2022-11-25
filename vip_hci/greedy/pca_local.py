@@ -48,7 +48,8 @@ def pca_annular_it(cube, angle_list, cube_ref=None, ncomp=1, n_it=10, thr=1.,
                    min_frames_lib=2, max_frames_lib=200, tol=1e-1, scaling=None, 
                    imlib='vip-fft', interpolation='lanczos4', collapse='median', 
                    full_output=False, verbose=True, weights=None,
-                   interp_order=2, rtol=1e-2, atol=1, **rot_options):
+                   interp_order=2, rtol=1e-2, atol=1, theta_init=0, 
+                   **rot_options):
     """
     Iterative version of annular PCA.
 
@@ -233,6 +234,10 @@ def pca_annular_it(cube, angle_list, cube_ref=None, ncomp=1, n_it=10, thr=1.,
         Absolute tolerance threshold element-wise in the significant signal 
         image compared to the same image obtained either 1 or 2 iterations
         before, to consider convergence [more details in np.allclose].
+    theta_init : float, optional
+        Trigonometric angle (counted from positive x axis, counterclockwise) 
+        of the edge of the first segment, when several annular segments are
+        requested.
 
     Returns
     -------
@@ -295,12 +300,12 @@ def pca_annular_it(cube, angle_list, cube_ref=None, ncomp=1, n_it=10, thr=1.,
 
     nframes = cube.shape[0]
 
-    if imlib=='vip-fft' and cube.shape[-1]%2: # convert to even-size for FFT-based rotation
-        cube = cube_shift(cube, 0.5, 0.5)
-        if cube.ndim == 3:
-            cube = cube[:, 1:, 1:]
-        elif cube.ndim == 4:
-            cube = cube[:, :, 1:, 1:]
+    # if imlib=='vip-fft' and cube.shape[-1]%2: # convert to even-size for FFT-based rotation
+    #     cube = cube_shift(cube, 0.5, 0.5)
+    #     if cube.ndim == 3:
+    #         cube = cube[:, 1:, 1:]
+    #     elif cube.ndim == 4:
+    #         cube = cube[:, :, 1:, 1:]
             
     # 1. Get a first disc estimate, using PCA
     res = pca_annular(cube, angle_list, cube_ref=ref_cube, radius_int=radius_int, 
@@ -393,7 +398,8 @@ def pca_annular_it(cube, angle_list, cube_ref=None, ncomp=1, n_it=10, thr=1.,
         cube_tmp, cube_ref_tmp = _prepare_matrix_ann(cube, ref_cube, 
                                                      scaling, angle_list, fwhm, 
                                                      radius_int, asize, 
-                                                     delta_rot, n_segments)
+                                                     delta_rot, n_segments, 
+                                                     theta_init)
 
         res_nd = pca_annular(cube_tmp-sig_cube, angle_list, 
                              cube_ref=cube_ref_tmp, radius_int=radius_int, 
@@ -457,7 +463,7 @@ def pca_annular_it(cube, angle_list, cube_ref=None, ncomp=1, n_it=10, thr=1.,
             #if thru_arr.ndim==1:
             #    thru_arr = thru_arr[np.newaxis,:]
             thru_2d = _interp2d_rad(thruput_interp, rad_samp, 
-                                    cube_tmp.shape[-1], theta_0=0)
+                                    cube_tmp.shape[-1], theta_0=theta_init)
         # elif thru_corr == 'map':
         #     thru_2d, fr_nofc, fr_fc = throughput_ext(cube_tmp-sig_cube, 
         #                                              angle_list, sig_image, 
@@ -811,6 +817,14 @@ def feves(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular, n_it=2,
         
     if nproc is None:
         nproc = int(cpu_count()/2)
+    if not isinstance(thr, (tuple,list)):
+        thr = (thr, thr)
+        
+    if isinstance(radius_int, tuple):
+        if len(radius_int) != 2:
+            raise TypeError("If a tuple, radius_int should be of length 2")
+    else:
+        radius_int = (radius_int, radius_int)
         
     # select when to do mp depending on buffer
     if buffer < nproc:
@@ -829,45 +843,112 @@ def feves(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular, n_it=2,
             delta_rot=cube.shape[1]*3/fwhm # forces doing RDI instead of ARDI
     else:
         raise ValueError("strategy not recognized: not ADI, RDI, RADI or ARDI")
-
-    if asizes is not None and n_segments is not None:
-        asz_def = asizes
-        nsegm_def = n_segments
-        n_frac = len(asizes)
-        if n_frac != len(n_segments):
-            raise ValueError("asizes and nsegments should have same lengths")
-    else:
-        msg = "asizes/nsegments not provided => auto-fractionation level {:.0f}"
-        print(msg.format(n_frac))
-        asz_def = [16,8,4,2,2,1,1]
-        nsegm_def = [1,1,1,1,3,3,6]
-        
-    # adapt lists based on cube xy sizes
-    cy, cx = frame_center(cube)
-    asz_max = int((cy-radius_int-buffer)/fwhm)
-    asizes = [a for a in asz_def if a < asz_max]
-    n_segments = [n for i, n in enumerate(nsegm_def) if asz_def[i]<asz_max]
-    if n_frac < 1 or n_frac > len(asizes):
-        msg="set n_frac to a value between 1 and {:.0f}"
-        raise ValueError(msg.format(len(asizes)))
-    elif n_frac < len(asizes):
-        asizes = asizes[:n_frac]
-        n_segments = n_segments[:n_frac]
     
-    # convert asizes to FWHM
-    asizes = [int(a*fwhm) for a in asizes]
+    # asizes and n_segments
+    if asizes is not None and n_segments is not None:
+        #asz_def = asizes
+        #nsegm_def = n_segments
+        if not isinstance(asizes, tuple):
+            asizes = (asizes, asizes)
+        if not isinstance(n_segments, tuple):
+            n_segments = (n_segments, n_segments)
+            
+        for i in range(2):
+            n_frac = len(asizes[i])
+            if n_frac != len(n_segments[i]):
+                raise ValueError("asizes and nsegments should have same lengths")
+        # if n_frac < 1 or n_frac > len(asizes):
+        #     msg="set n_frac to a value between 1 and {:.0f}"
+        #     raise ValueError(msg.format(len(asizes)))
+        # elif n_frac < len(asizes):
+        #     asizes = asizes[:n_frac]
+        #     n_segments = n_segments[:n_frac]
+            
+    else:
+        msg = "asizes/nsegments not provided => auto-fractionation ({} levels)"
+        print(msg.format(n_frac))
+        #asz_def = [16,8,4,2,2,1,1]
+        #nsegm_def = [1,1,1,1,3,3,6]
+        
+        # adapt lists based on cube xy sizes
+        cy, cx = frame_center(cube)
+        
+        asizes = [None, None]
+        n_segments = [None, None]
+        for i in range(2):
+            asz_max = np.floor((cy-radius_int[i]-buffer)/fwhm)
+            if asz_max < 1:
+                msg = "Input array size too small ({} px) - should be > {}px"
+                raise ValueError(msg.format(cube.shape[-1], 
+                                            int(2*(fwhm+radius_int[i]+buffer))))
+                
+            # asizes = [a for a in asz_def if a < asz_max]
+            # n_segments = [n for i, n in enumerate(nsegm_def) if asz_def[i]<asz_max]
+            asizes[i] = [asz_max]
+            n_segments[i] = [1]
+            while asizes[i][-1] > 2 and len(asizes[i])<n_frac:
+                asizes[i].append(asizes[i][-1]/2.)
+                n_segments[i].append(1)
+            if len(asizes[i])<n_frac:
+                asizes[i].append(asizes[i][-1])
+                n_segments[i].append(3)
+            if len(asizes[i])<n_frac:
+                asizes[i].append(asizes[i][-1])
+                n_segments[i].append(6)
+            if len(asizes[i])<n_frac:
+                msg = "WARNING - very small annular subsections requested. "
+                msg += "A maximum fractionation level of {} will be used instead "
+                msg += "the requested level of {}."
+                print(msg.format(len(asizes[i]), n_frac))
+                n_frac=len(asizes[i])
+            if verbose and strategy == 'RADI':
+                if i == 0:
+                    lab_str = 'RDI'
+                else:
+                    lab_str = 'ADI'
+                print("*** Annular widths to be used (in FWHM, {}): {} ***".format(lab_str, asizes[i]))
+                msg = "*** Number of azimuthal subsections to be used ({}): {} ***"
+                print(msg.format(lab_str, n_segments[i]))
+            elif verbose and i == 0:
+                print("*** Annular widths to be used ({}): {} ***".format(strategy, asizes[i]))
+                msg = "*** Number of azimuthal subsections to be used ({}): {} ***"
+                print(msg.format(strategy, n_segments[i]))
+                
+            # convert asizes to FWHM
+            asizes[i] = [int(a*fwhm) for a in asizes[i]]
+    
+    # convert ncomp to a list of lists
+    # if isinstance(ncomp,int):
+    #     ncomp = [[ncomp]]*len(asizes)
+    # elif isinstance(ncomp,list):
+    #     if len(ncomp) != len(asizes):
+    #         raise ValueError("ncomp should have same length as asizes")
+    #     elif isinstance(ncomp[0],int):
+    #         ncomp = [[ncomp[i]] for i in range(asizes)]
+    #     elif not isinstance(ncomp[0],list):
+    #         msg = "if ncomp is a list, its elements must be int or list of int"
+    #         raise TypeError(msg)
+    # else:
+    #     raise TypeError("ncomp can only be integer or list of int")
     
     # convert ncomp to a list of lists
     if isinstance(ncomp,int):
-        ncomp = [[ncomp]]*len(asizes)
+        ncomp = ([[ncomp]]*len(asizes[0]), [[ncomp]]*len(asizes[1]))
     elif isinstance(ncomp,list):
-        if len(ncomp) != len(asizes):
+        if len(ncomp) != len(asizes[0]):
             raise ValueError("ncomp should have same length as asizes")
         elif isinstance(ncomp[0],int):
-            ncomp = [[ncomp[i]] for i in range(asizes)]
-        elif not isinstance(ncomp[0],list):
+            ncomp = ([[ncomp[i]] for i in range(asizes[0])], 
+                     [[ncomp[i]] for i in range(asizes[1])])
+        elif isinstance(ncomp[0],list):
+            ncomp = (ncomp, ncomp)           
+        else:
             msg = "if ncomp is a list, its elements must be int or list of int"
             raise TypeError(msg)
+    elif isinstance(ncomp,tuple):
+        if len(ncomp) != 2:
+            raise TypeError("If a tuple, ncompt should have length 2")
+        ncomp = ([[ncomp[0]]]*len(asizes[0]), [[ncomp[1]]]*len(asizes[1]))
     else:
         raise TypeError("ncomp can only be integer or list of int")
     
@@ -967,7 +1048,7 @@ def feves_auto(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular,
                tol=1e-1, scaling=None, imlib='vip-fft', interpolation='lanczos4', 
                collapse='median', full_output=False, verbose=True, weights=None, 
                interp_order=2, rtol=1e-1, atol=1e-1, transmission=None, 
-               **rot_options):
+               debug=False, **rot_options):
     """
     Fractionation for Embedded Very young Exoplanet Search algorithm: Iterative
     PCA or NMF applied in progressively more fractionated image sections.
@@ -1389,7 +1470,7 @@ def feves_auto(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular,
                        ncomp, svd_mode, init_svd, min_frames_lib, 
                        max_frames_lib, tol, scaling, imlib, interpolation, 
                        collapse, atol, rtol, nproc_tmp, True, verbose, weights,
-                       regul, **rot_options)
+                       regul, False, **rot_options)
         for bb in range(buffer):
             master_cube.append(res[bb][0])
             master_it_cube.append(res[bb][1])
@@ -1410,7 +1491,8 @@ def feves_auto(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular,
                                svd_mode, init_svd, min_frames_lib,
                                max_frames_lib, tol, scaling, imlib, 
                                interpolation, collapse, atol, rtol, nproc_tmp, 
-                               True, verbose, weights, regul, **rot_options)
+                               True, verbose, weights, regul, debug=debug, 
+                               **rot_options)
             master_cube.append(res[0])
             master_it_cube.append(res[1])
             master_sig_cube.append(res[2])
@@ -1474,7 +1556,7 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, thr_per_ann,
                  n_br, interp_order, strategy, delta_rot, ncomp, svd_mode, 
                  init_svd, min_frames_lib, max_frames_lib, tol, scaling, imlib, 
                  interpolation, collapse, atol, rtol, nproc, full_output, 
-                 verbose, weights, regul, **rot_options):
+                 verbose, weights, regul, debug=False, **rot_options):
     
     def _gauss_interp_2d(array, fwhm_sz=2):
         nan_mask = array.copy()
@@ -1577,9 +1659,9 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, thr_per_ann,
         residuals_cube = res[0].copy()
         residuals_cube_ = res[1].copy()
 
-    res = _find_significant_signals(res[0], res[1], angle_list, 
-                                    thr[0], mask=radius_int, 
-                                    thr_per_ann=thr_per_ann, asize=asizes[0][0])
+    res = _find_significant_signals(res[0], res[1], angle_list, thr[0], 
+                                    mask=radius_int, thr_per_ann=thr_per_ann, 
+                                    asize=asizes[0][0])
     
     sig_mask, norm_stim, stim, inv_stim = res
     sig_image = frame.copy()
@@ -1853,12 +1935,12 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, thr_per_ann,
             cc_med = np.nanmedian(mask_cc)
             cc_std = np.nanstd(mask_cc)
             if cc_peak > cc_med+5*cc_std:
-                cc_cond = True
-            else:
                 cc_cond = False
-            path = "/Users/valentin/Documents/Postdoc/MWC758/NIRC2/20151024/3_postproc_vip_ssim/_autofeves_it_tests/TMP_v10/"
-            #write_fits(path+"norm_stim_nd_it{}.fits".format(it), norm_stim)
-            write_fits(path+"cc_map_it{}.fits".format(it), cc_map)
+            else:
+                cc_cond = True
+            if debug:
+                path = "/Users/valentin/Documents/Postdoc/MWC758/NIRC2/20151024/3_postproc_vip_ssim/_autofeves_it_tests/TMP_v10/"
+                write_fits(path+"cc_map_it{}.fits".format(it), cc_map)
     
             # TOO DANGEROUS TO APPLY THROUGHPUT 2D TO SIG_IMG and FRAME (could be good already)
             #sig_image/=thru_2d
@@ -1883,50 +1965,39 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, thr_per_ann,
                                                    mask=radius_int,
                                                    thr_per_ann=thr_per_ann, 
                                                    asize=asz_tmp)
-            norm_stim = res_sig_nd[1]
+            norm_stim_nd = res_sig_nd[1]
             
-            if np.amax(np.abs(norm_stim))<thr[1] and not cc_cond:
+            if np.amax(np.abs(norm_stim_nd))<thr[1] and cc_cond:
                 no_sig_nd=True
-            elif np.amax(np.abs(norm_stim))>=thr[1]:
+            elif np.amax(np.abs(norm_stim_nd))>=thr[1]:
                 no_sig_nd=False
                 # add significant signals from disk model to accelerate convergence (both neg and pos signals)
                 ## 2l COMMENTED FOR TEST:
                 sig_nd_mask = np.zeros_like(frame_nd)
-                sig_nd_mask[np.where(np.abs(norm_stim)>thr[1])] = frame_nd[np.where(np.abs(norm_stim)>thr[1])]
+                sig_nd_mask[np.where(np.abs(norm_stim_nd)>thr[1])] = frame_nd[np.where(np.abs(norm_stim_nd)>thr[1])]
                 #sig_nd_mask = frame_nd.copy()
                 #write_fits(path+"sig_nd_mask_it{}.fits".format(it), sig_nd_mask)
                 if regul:
                     sig_nd_mask = _blurring_2d(sig_nd_mask, None, fwhm_sz=fwhm/4)
-                    write_fits(path+"sig_nd_mask_it{}.fits".format(it), 
-                               sig_nd_mask)
-                    # npix_sig = len(sig_nd_mask[np.where(sig_nd_mask>0)])
-                    # # scale the image to better capture the true flux of significant signals after blurring
-                    # if npix_sig>10:
-                    #     # take percentile to reduce chance of scaling with outlier
-                    #     num_scal = np.nanpercentile(sig_nd_mask[np.where(sig_nd_mask>0)], 
-                    #                                 90)
-                    #     denom_scal = np.nanpercentile(sig_nd_mask_b[np.where(sig_nd_mask_b>0)], 
-                    #                                   90)
-                    # else:
-                    #     num_scal = np.nanmax(sig_nd_mask[np.where(sig_nd_mask>0)])
-                    #     denom_scal = np.nanmax(sig_nd_mask_b[np.where(sig_nd_mask_b>0)])
-                    # sig_nd_mask_b *= num_scal/denom_scal
-                    # sig_nd_mask = sig_nd_mask_b
+                    if debug:
+                        write_fits(path+"sig_nd_mask_it{}.fits".format(it), 
+                                   sig_nd_mask)
                 #write_fits(path+"sig_nd_mask_smooth_sca_it{}.fits".format(it), sig_nd_mask)
                 # else:
                 #     sig_nd_images[it] = sig_nd_mask.copy()
-                write_fits(path+"thru_2d_it{}.fits".format(it), 
-                           thru_2d)
+                if debug:
+                    write_fits(path+"thru_2d_it{}.fits".format(it), 
+                               thru_2d)
                 sig_nd_mask[np.where(sig_nd_mask>0)] = sig_nd_mask[np.where(sig_nd_mask>0)]/thru_2d[np.where(sig_nd_mask>0)]
                 sig_nd_images[it] = sig_nd_mask.copy()
                 frame += sig_nd_images[it]
             else:
                 no_sig_nd=False
-                print("!!! Warning: cross-correlation criterion met BUT no significant signal found in nd image !!!")
+                print("!!! Warning: cross-correlation criterion met BUT significant signal found in nd image !!!")
                 import pdb
                 pdb.set_trace()
-    
-            write_fits(path+"sig_image_it{}.fits".format(it), sig_image)
+            if debug:
+                write_fits(path+"sig_image_it{}.fits".format(it), sig_image)
             ## check if improvement compared to last iteration
             if it>1:
                 cond1 = np.allclose(sig_image, sig_images[it-1], rtol=rtol, 
@@ -1940,32 +2011,44 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, thr_per_ann,
                                     rtol=rtol, atol=atol*pos_med)
                 cond5 = (strategy == 'RADI' and it_f >= n_it_frac)
                 # take mean of last 2 iterations (it's bouncing around optimum)
-                write_fits(path+"norm_stim_nd_it{}.fits".format(it), 
-                           norm_stim)
-                write_fits(path+"frame_it{}.fits".format(it), 
-                           frame)
-                write_fits(path+"frame_it_nd{}.fits".format(it), 
-                           frame_nd)
-                write_fits(path+"sig_nd_mask_it{}.fits".format(it), 
-                           sig_nd_mask)
+                if debug:
+                    write_fits(path+"norm_stim_nd_it{}.fits".format(it), 
+                               norm_stim_nd)
+                    write_fits(path+"frame_it{}.fits".format(it), 
+                               frame)
+                    write_fits(path+"frame_it_nd{}.fits".format(it), 
+                               frame_nd)
+                    write_fits(path+"sig_nd_mask_it{}.fits".format(it), 
+                               sig_nd_mask)
                 print("CONDITIONS MET: ", cond1, cond2, cond3, cond4, 
                       cond5, no_sig_nd)
                 if cond4 and first_time:
+                    # it looks like this iteration led to similar estimates as 2 iterations ago
+                    # break the non-convergence by considering mean with result obtaind with 
+                    # previous fractionation level
                     frame -= sig_nd_mask
+                    ### *** get sig_nd_images estimate for previous frac level ***
                     frame += np.nanmean([sig_nd_images[it-1],sig_nd_images[it]],
                                         axis=0)
                     first_time=False
                 elif (cond1 or cond2 or cond3 or cond4 or cond5) and no_sig_nd:
-                    import pdb
-                    pdb.set_trace()
+                    # import pdb
+                    # pdb.set_trace()
                     if not (strategy == 'RADI' and it_f >= n_it_frac):
+                        if verbose:
+                            msg = "!!! One of the convergence criteria is met: moving to next fractionation level after {} iterations in frac{}!!!"
+                            print(msg.format(it, ai+1))
                         it_f+= (n_it-(it_f%n_it))
                         it += 1
                         break
                     else:
+                        if verbose:
+                            msg = "!!! Moving from RADI to ADI strategy after {} !!!"
+                            print(msg.format(it_f))
                         ai+=1
-                        write_fits(path+"residuals_cube_RDI{}.fits".format(it), 
-                                   residuals_cube[its])
+                        if debug:
+                            write_fits(path+"residuals_cube_RDI{}.fits".format(it), 
+                                       residuals_cube[its])
                         # continue to iterate with ADI
                         strategy = 'ADI'
                         first_time=True
@@ -2026,7 +2109,7 @@ def _find_significant_signals(residuals_cube, residuals_cube_, angle_list,
     
     
 def _prepare_matrix_ann(cube_tmp, ref_cube, scaling, angle_list, fwhm, 
-                        radius_int, asize, delta_rot, n_segments, theta_init):
+                        radius_int, asize, delta_rot, n_segments, theta_init=0):
     if scaling is None:
         if ref_cube is None:
             return cube_tmp.copy(), None

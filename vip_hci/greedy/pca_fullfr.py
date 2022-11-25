@@ -476,7 +476,7 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
                          **kwargs_nmf)
             residuals_cube_nd = res_nd[-3]
             frame_nd = res_nd[-1]
-        sig_mask_p=sig_mask.copy()
+        #sig_mask_p=sig_mask.copy()
         sig_mask, norm_stim = _find_significant_signals(residuals_cube_nd, 
                                                         residuals_cube_, 
                                                         angle_list, thr, 
