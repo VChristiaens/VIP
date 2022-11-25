@@ -438,7 +438,7 @@ def _pca_sdi_fr(fr, scal, radius_int, fwhm, asize, n_segments, delta_sep, ncomp,
     return frame_desc
 
 def _pca_adi_rdi(cube, angle_list, radius_int=0, fwhm=4, asize=2, n_segments=1,
-                 delta_rot=1, ncomp=1, svd_mode='lapack', nproc=None,
+                 delta_rot=1, ncomp=1, svd_mode='lapack', nproc=1,
                  min_frames_lib=2, max_frames_lib=200, tol=1e-1, scaling=None,
                  imlib='vip-fft', interpolation='lanczos4', collapse='median',
                  full_output=False, verbose=1, cube_ref=None, theta_init=0, 
