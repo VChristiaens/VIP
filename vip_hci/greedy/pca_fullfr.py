@@ -26,7 +26,7 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
            delta_rot=1, fwhm=4, mask_rdi=None, imlib='vip-fft', 
            interpolation='lanczos4', collapse='median', nproc=1, 
            check_memory=True, full_output=False, verbose=True, weights=None, 
-           smooth=False, rtol=1e-2, atol=1, **kwargs_nmf):
+           regul=False, rtol=1e-2, atol=1, **kwargs_nmf):
     """
     Iterative version of PCA. 
     
@@ -215,6 +215,10 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
         Absolute tolerance threshold element-wise in the significant signal 
         image compared to the same image obtained either 1 or 2 iterations
         before, to consider convergence [more details in np.allclose].
+    regul: bool, optional
+        Whether to use spatial correlation of neighbouring pixels as regularization.
+        If set to True, will smooth the estimated circumstellar signals map with a
+        Gaussian kernel of FWHM/2.
     kwargs_nmf: 
         Optional arguments of nmf function, including 
         init_svd: {'nndsvd', 'nndsvda', 'random'} (default: 'nndsvd').
@@ -387,8 +391,8 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
         # rotate image before thresholding
         #write_fits("TMP_sig_image.fits",frame)
         # sometimes there's a cross at the center for PCA no_mask => blur it!
-        if smooth:
-            frame = _blurring_2d(frame, None, fwhm_sz=2)
+        if regul:
+            frame = _blurring_2d(frame, None, fwhm_sz=fwhm/2)
             #write_fits("TMP_sig_image_blur.fits",frame)
         # create and rotate sig cube
         sig_cube = np.repeat(frame[np.newaxis, :, :], nframes, axis=0)
@@ -436,8 +440,8 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
         it_cube[it] = frame.copy()
         
         # ADDED for smoothing
-        if smooth:
-            residuals_cube = _blurring_3d(residuals_cube, None, fwhm_sz=2)
+        if regul:
+            residuals_cube = _blurring_3d(residuals_cube, None, fwhm_sz=fwhm/2)
             residuals_cube_ = cube_derotate(residuals_cube, angle_list, 
                                             imlib=imlib, nproc=nproc)
             frame = cube_collapse(residuals_cube_, collapse)

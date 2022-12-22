@@ -1978,7 +1978,7 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, thr_per_ann,
                 #sig_nd_mask = frame_nd.copy()
                 #write_fits(path+"sig_nd_mask_it{}.fits".format(it), sig_nd_mask)
                 if regul:
-                    sig_nd_mask = _blurring_2d(sig_nd_mask, None, fwhm_sz=fwhm/4)
+                    sig_nd_mask = _blurring_2d(sig_nd_mask, None, fwhm_sz=fwhm/2)
                     if debug:
                         write_fits(path+"sig_nd_mask_it{}.fits".format(it), 
                                    sig_nd_mask)
