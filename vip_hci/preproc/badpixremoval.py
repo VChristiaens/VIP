@@ -1039,8 +1039,9 @@ def cube_fix_badpix_ifs(array, lbdas, fluxes=None, mask=None, cy=None, cx=None,
             final_bpm[np.where(final_bpm > 1)] = 1
             # bad pixel correction in original cube
             array_out[:, i] = cube_fix_badpix_isolated(cube[:, i], final_bpm[:, i],
-                                                       sigma_clip, num_neig,
-                                                       size, True,
+                                                       correct_only=False, sigma_clip=sigma_clip,
+                                                       num_neig=num_neig,
+                                                       size=size, frame_by_frame=True,
                                                        protect_mask=protect_mask,
                                                        cxy=cxy, mad=mad,
                                                        ignore_nan=ignore_nan,
