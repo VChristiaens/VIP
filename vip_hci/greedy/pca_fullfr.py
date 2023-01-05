@@ -20,13 +20,13 @@ from ..var import (prepare_matrix, mask_circle, cart_to_pol, frame_center,
 
 
 def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1, 
-           ncomp_step=1, n_it=10, thr=1, thru_corr=False, n_neigh=0, 
+           ncomp_step=1, n_it=10, thr='auto', r_out=None, thru_corr=False, n_neigh=0,
            strategy='ADI', psfn=None, n_br=6, svd_mode='lapack', 
            init_svd='nndsvd', scaling=None, source_xy=None, mask_center_px=None, 
            delta_rot=1, fwhm=4, mask_rdi=None, imlib='vip-fft', 
            interpolation='lanczos4', collapse='median', nproc=1, 
            check_memory=True, full_output=False, verbose=True, weights=None, 
-           regul=False, rtol=1e-2, atol=1, **kwargs_nmf):
+           regul=False, rtol=1e-2, atol=1e-2, **kwargs_nmf):
     """
     Iterative version of PCA. 
     
@@ -91,12 +91,18 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
             total number of iterations
         - if mode is 'Pairet21' or 'Christiaens21':
             
-    thr: float, opt
+    thr: float or 'auto', opt
         Threshold used to identify significant signals in the final PCA image,
         iterartively. This threshold corresponds to the minimum intensity in 
         the STIM map computed from PCA residuals (Pairet et al. 2019), as 
         expressed in units of maximum intensity obtained in the inverse STIM 
         map (i.e. obtained from using opposite derotation angles).
+    r_out: float or None, opt
+        Outermost radius in pixels of circumstellar signals (estimated). This
+        will be used if thr is set to 'auto'. The max STIM value beyond that
+        radius will be used as minimum threshold. If r_out is set to None, the
+        half-width of the frames will be used (assuming no circumstellar signal
+        is present in the corners of the field, where it'd be lost by rotation).
     thru_corr: bool, opt
         Whether to correct the significant signals by the algorithmic 
         throughput before subtraction to the original cube at the next
@@ -242,7 +248,7 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
         [full_output=True] Derotated residuals cube from the last iteration. 
     """
     def _find_significant_signals(residuals_cube, residuals_cube_, angle_list, 
-                                  thr, mask=0):
+                                  thr, mask=0, r_out=None):
         # Identifies significant signals with STIM map (outside mask)
         stim = stim_map(residuals_cube_)
         inv_stim = inverse_stim_map(residuals_cube, angle_list)
@@ -252,6 +258,11 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
         max_inv = np.amax(inv_stim)
         if max_inv == 0:
             max_inv = 1 #np.amin(stim[np.where(stim>0)])
+        if thr == 'auto':
+            if r_out is None:
+                r_out = residuals_cube.shape[-1]//2
+            inv_stim_rout = mask_circle(inv_stim, r_out)
+            thr = np.amax(inv_stim_rout)/max_inv
         norm_stim = stim/max_inv
         good_mask = np.zeros_like(stim)
         good_mask[np.where(norm_stim>thr)] = 1
@@ -373,7 +384,8 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
     sig_mask, norm_stim = _find_significant_signals(residuals_cube, 
                                                     residuals_cube_, 
                                                     angle_list, thr, 
-                                                    mask=mask_center_px_ori)
+                                                    mask=mask_center_px_ori,
+                                                    r_out=r_out)
     sig_image = frame.copy()
     sig_images = np.zeros_like(it_cube)
     sig_image[np.where(1-sig_mask)] = 0
@@ -484,7 +496,8 @@ def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1,
         sig_mask, norm_stim = _find_significant_signals(residuals_cube_nd, 
                                                         residuals_cube_, 
                                                         angle_list, thr, 
-                                                        mask=mask_center_px_ori)
+                                                        mask=mask_center_px_ori,
+                                                        r_out=r_out)
         # expand the mask to consider signals within fwhm/2 of edges
         inv_sig_mask = np.ones_like(sig_mask)
         inv_sig_mask[np.where(sig_mask)] = 0
