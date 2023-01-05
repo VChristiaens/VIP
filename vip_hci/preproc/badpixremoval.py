@@ -395,9 +395,9 @@ def cube_fix_badpix_annuli(array, fwhm, cy=None, cx=None, sig=5.,
 
     # thresholds
     if min_thr is None:
-        min_thr = np.amin(array_corr)-1
+        min_thr = np.amin(array)-1
     if max_thr is None:
-        max_thr = np.amax(array_corr)-1
+        max_thr = np.amax(array)-1
 
     def bp_removal_2d(array, cy, cx, fwhm, sig, protect_mask, r_in_std,
                       r_out_std, verbose):
@@ -426,7 +426,6 @@ def cube_fix_badpix_annuli(array, fwhm, cy=None, cx=None, sig=5.,
             else:
                 r_out_std = min(n_y-(cy+r_in_std), cy-r_in_std,
                                 n_x-(cx+r_in_std), cx-r_in_std)
-            ceny, cenx = frame_center(array)
             width = max(2, r_out_std-r_in_std)
             array_crop = get_annulus_segments(array, r_in_std, width,
                                               mode="val")
@@ -1171,11 +1170,13 @@ def cube_fix_badpix_interp(array, bpm_mask, mode='fft', fwhm=4., kernel_sz=None,
         # first replace all bad pixels with NaNs - they will be interpolated
         array_corr[np.where(bpm_mask)] = np.nan
         if ndims == 2:
-            array_corr = frame_filter_lowpass(array_corr, mode=mode,
-                                                fwhm_size=fwhm, conv_mode='conv',
-                                                kernel_sz=kernel_sz, psf=psf,
-                                                iterate=True,
-                                                half_res_y=half_res_y, **kwargs)
+            array_corr_filt = frame_filter_lowpass(array_corr, mode=mode,
+                                                   fwhm_size=fwhm,
+                                                   conv_mode='conv',
+                                                   kernel_sz=kernel_sz, psf=psf,
+                                                   iterate=True,
+                                                   half_res_y=half_res_y,
+                                                   **kwargs)
         else:
             array_corr_filt = array_corr.copy()
             if np.isscalar(fwhm):
@@ -1189,14 +1190,15 @@ def cube_fix_badpix_interp(array, bpm_mask, mode='fft', fwhm=4., kernel_sz=None,
             elif psf.shape[0] != nz:
                 raise ValueError("input psf must have same z dimension as array")
             for z in range(nz):
-                array_corr_filt[z] = frame_filter_lowpass(array_corr[z], mode=mode,
-                                                        fwhm_size=fwhm[z],
-                                                        conv_mode='conv',
-                                                        kernel_sz=kernel_sz,
-                                                        psf=psf[z],
-                                                        iterate=True,
-                                                        half_res_y=half_res_y,
-                                                        **kwargs)
+                array_corr_filt[z] = frame_filter_lowpass(array_corr[z],
+                                                          mode=mode,
+                                                          fwhm_size=fwhm[z],
+                                                          conv_mode='conv',
+                                                          kernel_sz=kernel_sz,
+                                                          psf=psf[z],
+                                                          iterate=True,
+                                                          half_res_y=half_res_y,
+                                                          **kwargs)
 
         # replace only the bad pixels (array_corr is low-pass filtered)
         array_corr[np.where(bpm_mask)] = array_corr_filt[np.where(bpm_mask)]
@@ -1215,8 +1217,8 @@ def cube_fix_badpix_interp(array, bpm_mask, mode='fft', fwhm=4., kernel_sz=None,
             if nproc is None:
                 nproc = cpu_count()//2
             res = pool_map(nproc, frame_fix_badpix_fft, iterable(array_corr),
-                           iterable(bpm_mask), nit, tol, False, False,
-                           full_output, msg="Correcting bad pixels")
+                           iterable(bpm_mask), nit, tol, 2, False, full_output,
+                           msg="Correcting bad pixels")
             if full_output and isinstance(nit, int):
                 array_corr = np.array(res[:, 0], dtype=np.float64)
                 recon_cube = np.array(res[:, 1], dtype=np.float64)
