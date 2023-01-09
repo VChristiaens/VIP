@@ -2008,9 +2008,9 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, r_out,
                 frame += sig_nd_images[it]
             else:
                 no_sig_nd=False
-                print("!!! Warning: cross-correlation criterion met BUT significant signal found in nd image !!!")
-                import pdb
-                pdb.set_trace()
+                print("!!! Warning: cross-correlation criterion not met BUT no significant signal found in nd image !!!")
+                #import pdb
+                #pdb.set_trace()
             if debug:
                 write_fits(path+"sig_image_it{}.fits".format(it), sig_image)
             ## check if improvement compared to last iteration
