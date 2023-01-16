@@ -20,13 +20,13 @@ from ..var import (prepare_matrix, mask_circle, cart_to_pol, frame_center,
 
 
 def pca_it(cube, angle_list, cube_ref=None, algo=pca, mode=None, ncomp=1, 
-           ncomp_step=1, n_it=10, thr='auto', r_out=None, thru_corr=False, n_neigh=0,
-           strategy='ADI', psfn=None, n_br=6, svd_mode='lapack', 
+           ncomp_step=1, n_it=10, thr='auto', r_out=None, thru_corr=False,
+           n_neigh=0, strategy='ADI', psfn=None, n_br=6, svd_mode='lapack',
            init_svd='nndsvd', scaling=None, source_xy=None, mask_center_px=None, 
            delta_rot=1, fwhm=4, mask_rdi=None, imlib='vip-fft', 
            interpolation='lanczos4', collapse='median', nproc=1, 
            check_memory=True, full_output=False, verbose=True, weights=None, 
-           regul=False, rtol=1e-2, atol=1e-2, **kwargs_nmf):
+           regul=True, rtol=1e-2, atol=1e-2, **kwargs_nmf):
     """
     Iterative version of PCA. 
     
