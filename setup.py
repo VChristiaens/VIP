@@ -46,11 +46,17 @@ def resource(*args):
 
 # parse_requirements() returns generator of pip.req.InstallRequirement objects
 reqs = parse_requirements(resource('requirements.txt'), session=PipSession)
-requirements = [str(ir.requirement) for ir in reqs]    
+try:
+    requirements = [str(ir.requirement) for ir in reqs]
+except:
+    requirements = [str(ir.req) for ir in reqs]
 
 reqs_dev = parse_requirements(resource('requirements-dev.txt'), 
                               session=PipSession)
-requirements_dev = [str(ir.requirement) for ir in reqs_dev]    
+try:
+    requirements_dev = [str(ir.requirement) for ir in reqs_dev]
+except:
+    requirements_dev = [str(ir.req) for ir in reqs_dev]
 
 with open(resource('README.rst')) as readme_file:
     README = readme_file.read()
@@ -69,6 +75,7 @@ PACKAGES = ['vip_hci',
             'vip_hci.greedy',
             'vip_hci.invprob',
             'vip_hci.metrics',
+            'vip_hci.objects',
             'vip_hci.preproc',
             'vip_hci.psfsub',
             'vip_hci.stats',

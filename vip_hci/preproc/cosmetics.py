@@ -21,6 +21,21 @@ from astropy.stats import sigma_clipped_stats
 from ..config.utils_conf import pool_map, iterable
 from ..stats import sigma_filter
 from ..var import frame_center, get_square
+from multiprocessing import Process
+import multiprocessing
+from multiprocessing import set_start_method
+shared_mem = True
+try:
+   from multiprocessing import shared_memory
+except ImportError:
+   print('Failed to import shared_memory from multiprocessing')
+   try:
+      print('Trying to import shared_memory directly(for python 3.7)')
+      import shared_memory
+   except ModuleNotFoundError:
+       shared_mem = False
+       print("WARNING: multiprocessing unavailable for bad pixel correction.")
+       print('Either pip install shared-memory38, or upgrade to python>=3.8')
 
 
 def cube_crop_frames(array, size, xy=None, force=False, verbose=True,
@@ -342,7 +357,7 @@ def cube_correct_nan(cube, neighbor_box=3, min_neighbors=3, verbose=False,
         if nproc is None:
             nproc = cpu_count()//2
         n_z = obj_tmp.shape[0]
-        if nproc == 1:
+        if nproc == 1 or not shared_mem:
             for zz in range(n_z):
                 obj_tmp[zz], nnanpix = nan_corr_2d(obj_tmp[zz], neighbor_box,
                                                    min_neighbors, half_res_y,
@@ -351,12 +366,45 @@ def cube_correct_nan(cube, neighbor_box=3, min_neighbors=3, verbose=False,
                     msg = "In channel {}, {} NaN pixels were corrected"
                     print(msg.format(zz, nnanpix))
         else:
+            #dummy calling the function to prevent compiling of the function by individual workers
+            #This should save some time. 
+            dummy_obj = nan_corr_2d(obj_tmp[0], neighbor_box, min_neighbors, half_res_y, verbose, full_output=False)
             if verbose:
-                msg = "Correcting NaNs in multiprocessing..."
+                msg = "Correcting NaNs in multiprocessing using ADACS' approach..."
                 print(msg)
-            res = pool_map(nproc, nan_corr_2d, iterable(obj_tmp), neighbor_box,
-                           min_neighbors, half_res_y, verbose, False)
-            obj_tmp = np.array(res, dtype=np.float64)
+            #creation of shared memory blob
+            shm = shared_memory.SharedMemory(create=True, size=obj_tmp.nbytes)
+            #creating an array object similar to obj_tmp and occupying shared memory.
+            obj_tmp_shared=np.ndarray(obj_tmp.shape, dtype=obj_tmp.dtype, buffer=shm.buf)
+            #nan_corr_2d_mp function passes the frame and other details to nan_corr_2d for processing.
+            def nan_corr_2d_mp(i,obj, neighbor_box, min_neighbors, half_res_y, verbose):
+                obj_tmp_shared[i]=nan_corr_2d(obj, neighbor_box, min_neighbors, half_res_y,verbose,full_output=False)
+            # _nan_corr_2d unfolds the arguments
+            global _nan_corr_2d_mp
+            def _nan_corr_2d_mp(args):
+                   nan_corr_2d_mp(*args)
+            
+            context=multiprocessing.get_context('fork')
+            #processes argumnet is not provided to pool as no. of processes is 
+            #inferred from os.cpu_count()
+            pool=context.Pool(processes=nproc, maxtasksperchild=1)
+            #creating a list of arguments
+            args=[]
+            for j in range(n_z):
+                args.append([j, obj_tmp[j], neighbor_box, min_neighbors, half_res_y, verbose])
+            try:
+                pool.map_async(_nan_corr_2d_mp,args, chunksize=1 ).get(timeout=10_000_000)
+            finally:
+                pool.close()
+                pool.join()
+                obj_tmp[:]=obj_tmp_shared[:]
+                shm.close()
+                shm.unlink()
+            #Original Multiprocessing code commented out below and ADACS approach is activated. 
+            # res = pool_map(nproc, nan_corr_2d, iterable(obj_tmp), neighbor_box,
+            #                min_neighbors, half_res_y, verbose, False)
+            # obj_tmp = np.array(res, dtype=object)
+
 
     if verbose:
         print('All nan pixels are corrected.')

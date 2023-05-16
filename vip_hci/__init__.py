@@ -1,4 +1,4 @@
-__version__ = "1.3.5"
+__version__ = "1.4.2"
 
 
 from . import preproc
@@ -11,6 +11,5 @@ from . import metrics
 from . import stats
 from . import var
 from . import greedy
-from .hci_dataset import *
-from .hci_postproc import *
+from . import objects
 from .vip_ds9 import *
