@@ -241,14 +241,12 @@ def pca_annular(
 
     Returns
     -------
-    frame : numpy ndarray, 2d
-        [full_output=False] Median combination of the de-rotated cube.
     array_out : numpy ndarray, 3d or 4d
         [full_output=True] Cube of residuals.
     array_der : numpy ndarray, 3d or 4d
         [full_output=True] Cube residuals after de-rotation.
     frame : numpy ndarray, 2d
-        [full_output=True] Median combination of the de-rotated cube.
+        Median combination of the de-rotated cube.
     """
     if verbose:
         global start_time
