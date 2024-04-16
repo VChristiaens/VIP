@@ -2,15 +2,17 @@
 Tests for metrics/completeness.py
 
 """
-from vip_hci.psfsub import pca, PCA_Params
-from vip_hci.preproc import frame_crop
-from vip_hci.metrics import completeness_map
-from vip_hci.metrics import completeness_curve
-from vip_hci.fm import cube_planet_free
-from tests.helpers import np
-from tests.helpers import fixture
 import copy
 import sys
+
+from tests.helpers import fixture
+from tests.helpers import np
+from vip_hci.fm import cube_planet_free
+from vip_hci.metrics import completeness_curve
+from vip_hci.metrics import completeness_map
+from vip_hci.preproc import frame_crop
+from vip_hci.psfsub import pca
+from vip_hci.psfsub import PCA_Params
 
 sys.path.append(".../tests")
 

@@ -6,7 +6,5 @@ Subpackage ``fits`` includes fits handling functions:
     - appending extensions to a fit file
     - ADI cube opening (cube with PA attached as HDU extension)
 """
-
-
 from .fits import *
 from .headers import *
