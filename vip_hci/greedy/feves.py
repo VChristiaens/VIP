@@ -14,8 +14,6 @@ import numpy as np
 from scipy.interpolate import InterpolatedUnivariateSpline
 from scipy.signal import correlate2d
 from ..config.utils_conf import pool_map, iterable
-from .ipca_fullfr import _interp2d_rad
-from .ipca_local import find_significant_signals_ann
 from ..preproc import cube_derotate
 from ..preproc.derotation import _define_annuli
 from ..psfsub import nmf_annular, pca_annular
@@ -27,7 +25,7 @@ from ..fits import write_fits
 
 def feves(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular, n_it=2,
           fwhm=4, buff=1, thr=1, thr_per_ann=False, n_frac=6, asizes=None,
-          n_segments=None, thru_corr=False, n_neigh=0, strategy='ADI', psfn=None,
+          n_segments=None, n_neigh=0, strategy='ADI', psfn=None,
           n_br=6, radius_int=0, delta_rot=(0.1, 1), svd_mode='lapack',
           init_svd='nndsvda', nproc=1, min_frames_lib=2, max_frames_lib=200,
           tol=1e-1, scaling=None, imlib='vip-fft', interpolation='lanczos4',
@@ -413,7 +411,7 @@ def feves(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular, n_it=2,
         res = pool_map(nproc, _do_one_buff, iterable(range(buffer)), cube,
                        angle_list, ref_cube, algo, n_it, thr, None, thr_per_ann,
                        radius_int, fwhm, asizes, n_segments, n_neigh,
-                       thru_corr, psfn, n_br, interp_order, strategy, delta_rot,
+                       psfn, n_br, interp_order, strategy, delta_rot,
                        ncomp, svd_mode, init_svd, min_frames_lib,
                        max_frames_lib, tol, scaling, imlib, interpolation,
                        collapse, atol, rtol, nproc_tmp, True, verbose, weights,
@@ -433,7 +431,7 @@ def feves(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular, n_it=2,
         for bb in range(buffer):
             res = _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr,
                                None, thr_per_ann, radius_int, fwhm, asizes,
-                               n_segments, n_neigh, thru_corr, psfn,
+                               n_segments, n_neigh, psfn,
                                n_br, interp_order, strategy, delta_rot, ncomp,
                                svd_mode, init_svd, min_frames_lib,
                                max_frames_lib, tol, scaling, imlib,
@@ -488,7 +486,7 @@ def feves(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular, n_it=2,
 def feves_auto(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular,
                nit_max=30, regul=True, fwhm=4, buff=1, thr='auto', r_out=None,
                thr_per_ann=False, n_frac=6, asizes=None, n_segments=None,
-               thru_corr=False, psfn=None, n_neigh=0, strategy='ADI',
+               psfn=None, n_neigh=0, strategy='ADI',
                n_br=6, radius_int=0, delta_rot=(0.1, 1), svd_mode='lapack',
                init_svd='nndsvda', nproc=1, min_frames_lib=2, max_frames_lib=200,
                tol=1e-1, scaling=None, imlib='vip-fft', interpolation='lanczos4',
@@ -913,7 +911,7 @@ def feves_auto(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular,
         res = pool_map(nproc, _do_one_buff, iterable(range(buffer)), cube,
                        angle_list, ref_cube, algo, nit_max, thr, r_out,
                        thr_per_ann, radius_int, fwhm, asizes, n_segments, n_neigh,
-                       thru_corr, psfn, n_br, interp_order, strategy, delta_rot,
+                       psfn, n_br, interp_order, strategy, delta_rot,
                        ncomp, svd_mode, init_svd, min_frames_lib,
                        max_frames_lib, tol, scaling, imlib, interpolation,
                        collapse, atol, rtol, nproc_tmp, True, verbose, weights,
@@ -933,7 +931,7 @@ def feves_auto(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular,
         for bb in range(buffer):
             res = _do_one_buff(bb, cube, angle_list, ref_cube, algo, nit_max,
                                thr, r_out, thr_per_ann, radius_int, fwhm, asizes,
-                               n_segments, n_neigh, thru_corr, psfn,
+                               n_segments, n_neigh, psfn,
                                n_br, interp_order, strategy, delta_rot, ncomp,
                                svd_mode, init_svd, min_frames_lib,
                                max_frames_lib, tol, scaling, imlib,
@@ -1000,7 +998,7 @@ def feves_auto(cube, angle_list, cube_ref=None, ncomp=1, algo=pca_annular,
 
 def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, r_out,
                  thr_per_ann, rad_int, fwhm, asizes, n_segments, n_neigh,
-                 thru_corr, psfn, n_br, interp_order, strategy, delta_rot, ncomp,
+                 psfn, n_br, interp_order, strategy, delta_rot, ncomp,
                  svd_mode, init_svd, min_frames_lib, max_frames_lib, tol,
                  scaling, imlib, interpolation, collapse, atol, rtol, nproc,
                  full_output, verbose, weights, regul, debug=False,
@@ -1107,11 +1105,11 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, r_out,
         residuals_cube = res[0].copy()
         residuals_cube_ = res[1].copy()
 
-    res = find_significant_signals_ann(res[0], res[1], angle_list, thr[0],
+    res = find_significant_signals_fev(res[0], res[1], angle_list, thr[0],
                                        mask=radius_int, thr_per_ann=thr_per_ann,
                                        asize=asizes[0][0], r_out=r_out)
 
-    sig_mask, norm_stim, stim, inv_stim = res
+    sig_mask, norm_stim, stim, inv_stim, _ = res
     sig_image = frame.copy()
     sig_images = it_cube.copy()
     sig_nd_images = it_cube.copy()
@@ -1296,12 +1294,12 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, r_out,
             #     frame = cube_collapse(residuals_cube_, collapse)
 
             # Find significant signals in results, using disk-subtracted non-derotated cube for calculation of inverse STIM
-            res_sig = find_significant_signals_ann(residuals_cube_nd,
-                                                res_tmp_, angle_list,
-                                                thr[ai], mask=radius_int,
-                                                thr_per_ann=thr_per_ann,
-                                                asize=asz_tmp, r_out=r_out)
-            sig_mask, norm_stim, stim, inv_stim = res_sig
+            res_sig = find_significant_signals_fev(residuals_cube_nd,
+                                                   res_tmp_, angle_list,
+                                                   thr[ai], mask=radius_int,
+                                                   thr_per_ann=thr_per_ann,
+                                                   asize=asz_tmp, r_out=r_out)
+            sig_mask, norm_stim, stim, inv_stim, _ = res_sig
             #path = "/Users/valentin/Documents/Postdoc/MWC758/NIRC2/20151024/3_postproc_vip_ssim/_autofeves_it_tests/TMP_v10/"
             #write_fits(path+"norm_stim_it{}.fits".format(it), norm_stim)
 
@@ -1316,62 +1314,7 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, r_out,
             sig_image = frame.copy()
             sig_image[np.where(inv_sig_mask)] = 0
             sig_image[np.where(sig_image<0)] = 0
-            # correct by algo throughput if requested
-            if thru_corr and (cond3 or cond4 or it_f>n_it/2):
-                if algo == pca_annular:
-                    thru, rad_vec = throughput(cube_tmp-sig_cube, -angle_list,
-                                               psf_template=psfn, fwhm=fwhm,
-                                               algo=algo,
-                                               nbranch=n_br, inner_rad=1,
-                                               imlib=imlib, verbose=False,
-                                               radius_int=int(fwhm), ncomp=npc,
-                                               asize=asz_tmp,
-                                               n_segments=n_segments[ai][it_tmp],
-                                               fc_snr=5, delta_rot=delta_rot,
-                                               scaling=scaling,
-                                               cube_ref=cube_ref_tmp, tol=tol,
-                                               svd_mode=svd_mode, nproc=nproc,
-                                               min_frames_lib=min_frames_lib,
-                                               max_frames_lib=max_frames_lib,
-                                               interpolation=interpolation,
-                                               collapse=collapse)
-                else:
-                    thru, rad_vec = throughput(cube_tmp-sig_cube, -angle_list,
-                                               psf_template=psfn, fwhm=fwhm,
-                                               palgo=algo,
-                                               nbranch=n_br, inner_rad=1,
-                                               imlib=imlib, verbose=False,
-                                               radius_int=int(fwhm), ncomp=npc,
-                                               asize=asz_tmp,
-                                               n_segments=n_segments[ai][it_tmp],
-                                               fc_snr=5, delta_rot=delta_rot,
-                                               scaling=scaling,
-                                               cube_ref=cube_ref_tmp, tol=tol,
-                                               init_svd=init_svd, nproc=nproc,
-                                               min_frames_lib=min_frames_lib,
-                                               max_frames_lib=max_frames_lib,
-                                               interpolation=interpolation,
-                                               collapse=collapse)
-
-                if interp_order is not None:
-                    # interpolating the throughput vector, spline order 2
-                    rad_samp = np.arange(int(np.ceil(rad_vec[0])),
-                                         int(np.floor(rad_vec[-1])),1)
-                    n_rad = len(rad_samp)
-                    thruput_interp = np.ones([n_br,n_rad])
-                    for bb in range(n_br):
-                        f = InterpolatedUnivariateSpline(rad_vec, thru[bb],
-                                                         k=interp_order)
-                        thruput_interp[bb] = f(rad_samp)
-                else:
-                    thruput_interp = thru.copy()
-                    rad_samp = rad_vec.copy()
-                #if thru_arr.ndim==1:
-                #    thru_arr = thru_arr[np.newaxis,:]
-                thru_2d = _interp2d_rad(thruput_interp, rad_samp,
-                                        cube_tmp.shape[-1], theta_0=0)
-            else:
-                thru_2d=np.ones_like(sig_image)
+            thru_2d=np.ones_like(sig_image)
 
             # cross-correlation criterion needs to be met to move to next fractionation:
             # otherwise keep adding from frame_nd?
@@ -1407,12 +1350,13 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, r_out,
 
             # Prepare next iteration?
             ## Check whether sig signals are still found in no-disk cube, if not move to next fractionation
-            res_sig_nd = _find_significant_signals(residuals_cube_nd,
-                                                   residuals_cube_nd_,
-                                                   angle_list, thr[ai],
-                                                   mask=radius_int,
-                                                   thr_per_ann=thr_per_ann,
-                                                   asize=asz_tmp, r_out=r_out)
+            res_sig_nd = find_significant_signals_fev(residuals_cube_nd,
+                                                      residuals_cube_nd_,
+                                                      angle_list, thr[ai],
+                                                      mask=radius_int,
+                                                      thr_per_ann=thr_per_ann,
+                                                      asize=asz_tmp,
+                                                      r_out=r_out)
             norm_stim_nd = res_sig_nd[1]
             thr_i = res_sig_nd[-1]
 
@@ -1530,9 +1474,9 @@ def _do_one_buff(bb, cube, angle_list, ref_cube, algo, n_it, thr, r_out,
         return frame
 
 
-def _find_significant_signals(residuals_cube, residuals_cube_, angle_list,
-                              thr, mask=0, thr_per_ann=True, asize=4,
-                              r_out=None):
+def find_significant_signals_fev(residuals_cube, residuals_cube_, angle_list,
+                                 thr, mask=0, thr_per_ann=True, asize=4,
+                                 r_out=None):
     # Identifies significant signals with STIM map (outside mask)
     stim = stim_map(residuals_cube_)
     inv_stim = inverse_stim_map(residuals_cube, angle_list)
