@@ -1,5 +1,4 @@
 #! /usr/bin/env python
-
 """
 Module with functions for computing SVDs.
 """
@@ -103,10 +102,10 @@ class SVDecomposer:
         * ``spat-standard``: spatial mean centering plus scaling pixel values
           to unit variance (spatially).
 
-        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve 
-        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this 
-        involves a sort of c-ADI preprocessing, which (i) can be dangerous for 
-        datasets with low amount of rotation (strong self-subtraction), and (ii) 
+        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve
+        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this
+        involves a sort of c-ADI preprocessing, which (i) can be dangerous for
+        datasets with low amount of rotation (strong self-subtraction), and (ii)
         should probably be referred to as ARDI (i.e. not RDI stricto sensu).
 
     scale_list : numpy ndarray, optional
@@ -390,7 +389,7 @@ def svd_wrapper(matrix, mode, ncomp, verbose, full_output=False,
     verbose: bool
         If True intermediate information is printed out.
     full_output : bool optional
-        If True the 3 terms of the SVD factorization are returned. 
+        If True the 3 terms of the SVD factorization are returned.
     random_state : int, RandomState instance or None, optional
         If int, random_state is the seed used by the random number generator.
         If RandomState instance, random_state is the random number generator.
@@ -402,7 +401,7 @@ def svd_wrapper(matrix, mode, ncomp, verbose, full_output=False,
         VRAM and converted to numpy ndarrays.
     left_eigv : bool, optional
         Whether to use rather left or right singularvectors
-        
+
 
     Returns
     -------
@@ -459,7 +458,7 @@ def svd_wrapper(matrix, mode, ncomp, verbose, full_output=False,
             V[:, i] /= S    # scaling EVs by the square root of EVals
         V = V[:ncomp]
         if full_output or left_eigv:
-            U = EV/np.sqrt(np.abs(e)) 
+            U = EV/np.sqrt(np.abs(e))
             U = U[:ncomp]
         if verbose:
             print('Done PCA with numpy linalg eigh functions')
@@ -534,7 +533,7 @@ def svd_wrapper(matrix, mode, ncomp, verbose, full_output=False,
         if to_numpy:
             V = cupy.asnumpy(V)
         if full_output or left_eigv:
-            U = EV/np.sqrt(np.abs(e)) 
+            U = EV/np.sqrt(np.abs(e))
             U = U[:ncomp]
             if to_numpy: U = cupy.asnumpy(U)
         if verbose:
@@ -549,9 +548,9 @@ def svd_wrapper(matrix, mode, ncomp, verbose, full_output=False,
         S = s_gpu[:ncomp]
         U = torch.transpose(u_gpu, 0, 1)[:ncomp]
         if to_numpy:
-            V = np.array(V)
-            S = np.array(S)
-            U = np.array(U)
+            V = V.cpu().numpy()  # V = np.array(V)
+            S = S.cpu().numpy()  # S = np.array(S)
+            U = U.cpu().numpy()  # U = np.array(U)
         if verbose:
             print('Done SVD/PCA with pytorch (GPU)')
 
@@ -567,11 +566,12 @@ def svd_wrapper(matrix, mode, ncomp, verbose, full_output=False,
             V[:, i] /= S
         V = V[:ncomp]
         if to_numpy:
-            V = np.array(V)
+            V = V.cpu().numpy()  # V = np.array(V)
         if full_output or left_eigv:
-            U = EV/np.sqrt(np.abs(e)) 
+            U = EV/np.sqrt(np.abs(e))
             U = U[:ncomp]
-            if to_numpy: U = cupy.asnumpy(U)    
+            if to_numpy:
+                U = U.cpu().numpy()  # U = cupy.asnumpy(U)
         if verbose:
             print('Done PCA with pytorch eig function')
 
@@ -580,9 +580,9 @@ def svd_wrapper(matrix, mode, ncomp, verbose, full_output=False,
             raise RuntimeError('Pytorch is not installed')
         U, S, V = randomized_svd_gpu(matrix, ncomp, n_iter=2, lib='pytorch')
         if to_numpy:
-            V = np.array(V)
-            S = np.array(S)
-            U = np.array(U)
+            V = V.cpu().numpy()  # V = np.array(V)
+            S = S.cpu().numpy()  # S = np.array(S)
+            U = U.cpu().numpy()  # U = np.array(U)
         if verbose:
             print('Done randomized SVD/PCA with randomized pytorch (GPU)')
 
@@ -689,14 +689,17 @@ def get_eigenvectors(ncomp, data, svd_mode, mode='noise', noise_error=1e-3,
     else:
         # Performing SVD/PCA according to "svd_mode" flag
         ncomp = min(ncomp, min(data_ref.shape[0], data_ref.shape[1]))
-        V = svd_wrapper(data_ref, svd_mode, ncomp, verbose=False, left_eigv=False)
+        V = svd_wrapper(data_ref, svd_mode, ncomp, verbose=False,
+                        left_eigv=left_eigv)
+        if left_eigv:
+            V = V.T
 
     return V
 
 
 def randomized_svd_gpu(M, n_components, n_oversamples=10, n_iter='auto',
                        transpose='auto', random_state=0, lib='cupy'):
-    """Computes a truncated randomized SVD on GPU. Adapted from Sklearn.
+    """Compute a truncated randomized SVD on GPU - adapted from Sklearn.
 
     Parameters
     ----------

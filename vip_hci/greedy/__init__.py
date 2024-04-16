@@ -1,18 +1,15 @@
 """
-Subpackage ``itpca`` contains the iterative PCA based algorithms for model PSF
-subtraction, in an iterative fashion to minim
-This is inspired by Pairet et al. (2019), and also described in Christiaens et
-al. (2021b).
-The different flavors of PCA available in the subpackage 'pca' have been
-implemented in an iterative fashion.
-
-Note: the routines of this subpackage were not added to the 'pca' subpackage to
-avoid circular imports. This is because the iterative pca algorithms call
-routines from the 'metrics' subpackage, which in turn requires the svd routines
-defined in the 'pca' subpackage.
+Subpackage ``greedy`` contains iterative implementations of stellar PSF
+modelling + subtraction algorithms. The following methods have been implemented:
+- iterative roll subtraction [HEA00]_ / [CHR24]_
+- iterative PCA in full frame [PAI18]_ / [PAI21]_ / [JUI24]_
+- iterative NMF in full frame (cite latest VIP paper if used).
+- FEVES (Christiaens et al. in prep.).
 """
-
-from .opt_itpca import *
-from .pca_fullfr import *
-from .pca_local import *
+from .feves import *
+from .feves_opt import *
+from .inmf_fullfr import *
+from .ipca_fullfr import *
+from .ipca_local import *
+from .iroll import *
 from .utils_itpca import *

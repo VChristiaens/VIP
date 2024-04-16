@@ -2,9 +2,7 @@
 """Module for the post-processing non-negative matrix factorization algorithm."""
 
 __author__ = "Thomas Bédrine"
-__all__ = [
-    "NMFBuilder",
-]
+__all__ = ["NMFBuilder", "PPNMF"]
 
 from typing import Optional, List, Tuple, Union
 from dataclasses import dataclass, field
@@ -14,7 +12,7 @@ from dataclass_builder import dataclass_builder
 
 from .dataset import Dataset
 from .postproc import PostProc
-from ..psfsub import nmf, nmf_annular, NMFParams, NMFAnnParams
+from ..psfsub import nmf, nmf_annular, NMF_Params, NMF_ANNULAR_Params
 from ..config.utils_conf import algo_calculates_decorator as calculates
 
 DELTA_ANN_DEFAULT = (0.1, 1)
@@ -23,7 +21,7 @@ DELTA_FF_DEFAULT = 1
 
 # TODO: update PPNMF doc to include 'nndsvdar' in init_svd section, weights too
 @dataclass
-class PPNMF(PostProc, NMFAnnParams, NMFParams):
+class PPNMF(PostProc, NMF_ANNULAR_Params, NMF_Params):
     """
     Post-processing full-frame non-negative matrix factorization algorithm.
 
@@ -88,6 +86,7 @@ class PPNMF(PostProc, NMFAnnParams, NMFParams):
             ``vip_hci.preproc.frame_rotate``).
 
         """
+        self.snr_map = None
         self._update_dataset(dataset)
 
         if self.dataset.fwhm is None:
@@ -100,13 +99,15 @@ class PPNMF(PostProc, NMFAnnParams, NMFParams):
         if verbose is not None:
             self.verbose = verbose
 
+        all_params = {"algo_params": self, **rot_options}
+
         if runmode == "fullframe":
             # Annular NMF gives the default delta_rot, fullframe delta_rot must be int
             if not isinstance(self.delta_rot, float):
                 self.delta_rot = DELTA_FF_DEFAULT
 
-            params_dict = self._create_parameters_dict(NMFParams)
-            res = nmf(algo_params=self, **rot_options)
+            params_dict = self._create_parameters_dict(NMF_Params)
+            res = nmf(**all_params)
 
             (
                 self.nmf_reshaped,
@@ -127,8 +128,8 @@ class PPNMF(PostProc, NMFAnnParams, NMFParams):
             self.delta_rot = DELTA_ANN_DEFAULT
 
         else:
-            params_dict = self._create_parameters_dict(NMFAnnParams)
-            res = nmf_annular(algo_params=self, **rot_options)
+            params_dict = self._create_parameters_dict(NMF_ANNULAR_Params)
+            res = nmf_annular(**all_params)
 
             (
                 self.cube_residuals,

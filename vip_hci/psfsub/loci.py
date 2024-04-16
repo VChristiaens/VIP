@@ -14,7 +14,7 @@ Module with a frame differencing algorithm for ADI and ADI+mSDI post-processing.
 """
 
 __author__ = "Carlos Alberto Gomez Gonzalez, Thomas Bédrine"
-__all__ = ["xloci", "LOCIParams"]
+__all__ = ["xloci", "XLOCI_Params"]
 
 import numpy as np
 import scipy as sp
@@ -22,25 +22,74 @@ import pandas as pn
 from multiprocessing import cpu_count
 from sklearn.metrics import pairwise_distances
 from dataclasses import dataclass
-from strenum import LowercaseStrEnum as LowEnum
-from typing import Tuple, Union
+from enum import Enum
+from typing import Tuple, Union, List
 from ..var import get_annulus_segments
-from ..var.object_utils import setup_parameters, separate_kwargs_dict
-from ..var.paramenum import Metric, Adimsdi, Imlib, Interpolation, Collapse, Solver
-from ..preproc import cube_derotate, cube_collapse, check_pa_vector, check_scal_vector
-from ..preproc.rescaling import _find_indices_sdi
 from ..config import time_ini, timing
+from ..config.utils_param import setup_parameters, separate_kwargs_dict
+from ..config.paramenum import (Metric, Adimsdi, Imlib, Interpolation, Collapse,
+                                Solver, ALGO_KEY)
+from ..config.utils_conf import pool_map, iterable, Progressbar
+from ..preproc import (cube_derotate, cube_collapse, check_pa_vector,
+                       check_scal_vector)
+from ..preproc.rescaling import _find_indices_sdi
 from ..preproc import cube_rescaling_wavelengths as scwave
 from ..preproc.derotation import _find_indices_adi, _define_annuli
-from ..config.utils_conf import pool_map, iterable, Progressbar
 
 
 @dataclass
-class LOCIParams:
+class XLOCI_Params:
     """
     Set of parameters for the LOCI algorithm.
 
+    See function `xloci` below for the documentation.
+    """
+
+    cube: np.ndarray = None
+    angle_list: np.ndarray = None
+    scale_list: np.ndarray = None
+    fwhm: float = 4
+    metric: Enum = Metric.MANHATTAN
+    dist_threshold: int = 100
+    delta_rot: Union[float, Tuple[float]] = (0.1, 1)
+    delta_sep: Union[float, Tuple[float]] = (0.1, 1)
+    radius_int: int = 0
+    asize: int = 4
+    n_segments: int = 4
+    nproc: int = 1
+    solver: Enum = Solver.LSTSQ
+    tol: float = 1e-2
+    optim_scale_fact: float = 2
+    adimsdi: Enum = Adimsdi.SKIPADI
+    imlib: Enum = Imlib.VIPFFT
+    interpolation: Enum = Interpolation.LANCZOS4
+    collapse: Enum = Collapse.MEDIAN
+    verbose: bool = True
+    full_output: bool = False
+
+
+def xloci(*all_args: List, **all_kwargs: dict):
+    """Locally Optimized Combination of Images (LOCI) algorithm as in [LAF07]_.
+    The PSF is modeled (for ADI and ADI+mSDI) with a least-square combination
+    of neighbouring frames (solving the equation a x = b by computing a vector
+    x of coefficients that minimizes the Euclidean 2-norm || b - a x ||^2).
+
+    This algorithm is also compatible with IFS data to perform LOCI-SDI, in a
+    similar fashion as suggested in [PUE12]_ (albeit without dampening zones).
+
     Parameters
+    ----------
+    all_args: list, optional
+        Positionnal arguments for the LOCI algorithm. Full list of parameters
+        below.
+    all_kwargs: dictionary, optional
+        Mix of keyword arguments that can initialize a LOCIParams and the optional
+        'rot_options' dictionnary, with keyword values for "border_mode", "mask_val",
+        "edge_blend", "interp_zeros", "ker" (see documentation of
+        ``vip_hci.preproc.frame_rotate``). Can also contain a LOCIParams named as
+        `algo_params`.
+
+    LOCI parameters
     ----------
     cube : numpy ndarray, 3d or 4d
         Input cube.
@@ -54,8 +103,8 @@ class LOCIParams:
         cube (more thorough approaches can be used to get the scaling factors,
         e.g. with ``vip_hci.preproc.find_scal_vector``).
     fwhm : float, optional
-        Size of the FHWM in pixels. Default is 4.
-    metric : LowerCaseStrEnum, see `vip_hci.var.paramenum.Metric`
+        Size of the FWHM in pixels. Default is 4.
+    metric : Enum, see `vip_hci.config.paramenum.Metric`
         Distance metric to be used ('cityblock', 'cosine', 'euclidean', 'l1',
         'l2', 'manhattan', 'correlation', etc). It uses the scikit-learn
         function ``sklearn.metrics.pairwise.pairwise_distances`` (check its
@@ -65,7 +114,7 @@ class LOCIParams:
         initially discarded. 100 by default.
     delta_rot : float or tuple of floats, optional
         Factor for adjusting the parallactic angle threshold, expressed in
-        FWHM. Default is 1 (excludes 1 FHWM on each side of the considered
+        FWHM. Default is 1 (excludes 1 FWHM on each side of the considered
         frame). If a tuple of two floats is provided, they are used as the lower
         and upper intervals for the threshold (grows linearly as a function of
         the separation).
@@ -87,7 +136,7 @@ class LOCIParams:
         Number of processes for parallel computing. If None the number of
         processes will be set to cpu_count()/2. By default the algorithm works
         in single-process mode.
-    solver : LowerCaseStrEnum, see `vip_hci.var.paramenum.Solver`
+    solver : Enum, see `vip_hci.config.paramenum.Solver`
         Choosing the solver of the least squares problem. ``lstsq`` uses the
         standard scipy least squares solver. ``nnls`` uses the scipy
         non-negative least-squares solver.
@@ -102,7 +151,7 @@ class LOCIParams:
         similar to LOCI. The optimization segments share the same inner radius,
         mean angular position and angular width as their corresponding
         subtraction segments.
-    adimsdi : LowerCaseStrEnum, see `vip_hci.var.paramenum.Adimsdi`
+    adimsdi : Enum, see `vip_hci.config.paramenum.Adimsdi`
         Changes the way the 4d cubes (ADI+mSDI) are processed.
 
         ``skipadi``: the multi-spectral frames are rescaled wrt the largest
@@ -113,76 +162,41 @@ class LOCIParams:
         (as in the ``skipadi`` case). Then the residuals are processed again in
         an ADI fashion.
 
-    imlib : LowerCaseStrEnum, see `vip_hci.var.paramenum.Imlib`
+    imlib : Enum, see `vip_hci.config.paramenum.Imlib`
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
-    interpolation : LowerCaseStrEnum, see `vip_hci.var.paramenum.Interpolation`
+    interpolation : Enum, see `vip_hci.config.paramenum.Interpolation`
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
-    collapse : LowerCaseStrEnum, see `vip_hci.var.paramenum.Collapse`
+    collapse : Enum, see `vip_hci.config.paramenum.Collapse`
         Sets the way of collapsing the frames for producing a final image.
     verbose: bool, optional
         If True prints info to stdout.
     full_output: bool, optional
-        Whether to return the final median combined image only or with other
-        intermediate arrays.
-    """
-
-    cube: np.ndarray = None
-    angle_list: np.ndarray = None
-    scale_list: np.ndarray = None
-    fwhm: float = 4
-    metric: LowEnum = Metric.MANHATTAN
-    dist_threshold: int = 100
-    delta_rot: Union[float, Tuple[float]] = (0.1, 1)
-    delta_sep: Union[float, Tuple[float]] = (0.1, 1)
-    radius_int: int = 0
-    asize: int = 4
-    n_segments: int = 4
-    nproc: int = 1
-    solver: LowEnum = Solver.LSTSQ
-    tol: float = 1e-2
-    optim_scale_fact: float = 2
-    adimsdi: LowEnum = Adimsdi.SKIPADI
-    imlib: LowEnum = Imlib.VIPFFT
-    interpolation: LowEnum = Interpolation.LANCZOS4
-    collapse: LowEnum = Collapse.MEDIAN
-    verbose: bool = True
-    full_output: bool = False
-
-
-def xloci(algo_params: LOCIParams = None, **all_kwargs):
-    """Locally Optimized Combination of Images (LOCI) algorithm as in [LAF07]_.
-    The PSF is modeled (for ADI and ADI+mSDI) with a least-square combination
-    of neighbouring frames (solving the equation a x = b by computing a vector
-    x of coefficients that minimizes the Euclidean 2-norm || b - a x ||^2).
-
-    This algorithm is also compatible with IFS data to perform LOCI-SDI, in a
-    similar fashion as suggested in [PUE12]_ (albeit without dampening zones).
-
-    Parameters
-    ----------
-    algo_params: LOCIParams
-        Dataclass retaining all the needed parameters for LOCI.
-    all_kwargs: dictionary, optional
-        Mix of the parameters that can initialize an algo_params and the optional
-        'rot_options' dictionnary, with keyword values for "border_mode", "mask_val",
-        "edge_blend", "interp_zeros", "ker" (see documentation of
-        ``vip_hci.preproc.frame_rotate``)
+        Whether to return the final median combined image only or along with
+        2 other residual cubes (before and after derotation).
 
     Returns
     -------
+    cube_res : numpy ndarray, 3d
+        [full_output=True] Cube of residuals.
+    cube_der : numpy ndarray, 3d
+        [full_output=True] Derotated cube of residuals.
     frame_der_median : numpy ndarray, 2d
         Median combination of the de-rotated cube of residuals.
-
-    If ``full_output`` is True, the following intermediate arrays are returned:
-    cube_res, cube_der, frame_der_median
 
     """
     # Separating the parameters of the ParamsObject from the optionnal rot_options
     class_params, rot_options = separate_kwargs_dict(
-        initial_kwargs=all_kwargs, parent_class=LOCIParams
+        initial_kwargs=all_kwargs, parent_class=XLOCI_Params
     )
+
+    # Extracting the object of parameters (if any)
+    algo_params = None
+    if ALGO_KEY in rot_options.keys():
+        algo_params = rot_options[ALGO_KEY]
+        del rot_options[ALGO_KEY]
+
     if algo_params is None:
-        algo_params = LOCIParams(**class_params)
+        algo_params = XLOCI_Params(*all_args, **class_params)
 
     global ARRAY
     ARRAY = algo_params.cube
@@ -261,7 +275,8 @@ def xloci(algo_params: LOCIParams = None, **all_kwargs):
                     "{:.3f}".format(n_annuli, algo_params.fwhm)
                 )
 
-            add_params = {"fr": iterable(range(n)), "scal": algo_params.scale_list}
+            add_params = {"fr": iterable(
+                range(n)), "scal": algo_params.scale_list}
             func_params = setup_parameters(
                 params_obj=algo_params, fkt=_leastsq_sdi_fr, as_list=True, **add_params
             )
@@ -396,7 +411,8 @@ def _leastsq_adi(
 
         # indices
         indices = get_annulus_segments(
-            cube[0], inner_radius=inner_radius_ann, width=asize, nsegm=n_segments_ann
+            cube[0], inner_radius=inner_radius_ann, width=asize,
+            nsegm=n_segments_ann
         )
         ind_opt = get_annulus_segments(
             cube[0],
@@ -455,7 +471,8 @@ def _leastsq_adi(
         return frame_der_median
 
 
-def _leastsq_patch(ayxyx, pa_thresholds, angles, metric, dist_threshold, solver, tol):
+def _leastsq_patch(ayxyx, pa_thresholds, angles, metric, dist_threshold, solver,
+                   tol):
     """Helper function for _leastsq_ann.
 
     Parameters
@@ -501,7 +518,10 @@ def _leastsq_patch(ayxyx, pa_thresholds, angles, metric, dist_threshold, solver,
             A = values_opt[ind_ref]
             b = values_opt[i]
             if solver == "lstsq":
-                coef = sp.linalg.lstsq(A.T, b, cond=tol)[0]  # SVD method
+                try:
+                    coef = sp.linalg.lstsq(A.T, b, cond=tol)[0]  # SVD method
+                except:
+                    coef = sp.optimize.nnls(A.T, b)[0]  # if SVD does not work
             elif solver == "nnls":
                 coef = sp.optimize.nnls(A.T, b)[0]
             elif solver == "lsq":  # TODO

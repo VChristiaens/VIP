@@ -1,20 +1,20 @@
 #! /usr/bin/env python
-
 """
 Module with simplex (Nelder-Mead) optimization for defining the flux and
 position of a companion using the Negative Fake Companion.
-     
+
 """
-
-
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from scipy.optimize import minimize
-from .negfc_fmerit import chisquare, get_mu_and_sigma
+
+from ..config import time_ini
+from ..config import timing
+from ..config.utils_conf import sep
 from ..psfsub import pca_annulus
 from ..var import frame_center
-from ..config import time_ini, timing
-from ..config.utils_conf import sep
+from .negfc_fmerit import chisquare
+from .negfc_fmerit import get_mu_and_sigma
 
 
 __author__ = 'O. Wertz, C. A. Gomez Gonzalez, V. Christiaens'
@@ -23,21 +23,23 @@ __all__ = ['firstguess',
 
 
 def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
-                          aperture_radius, ncomp, cube_ref=None,
+                          aperture_radius, ncomp=1, cube_ref=None,
                           svd_mode='lapack', scaling=None, fmerit='sum',
-                          imlib='vip-fft', interpolation='lanczos4',
+                          imlib='skimage', interpolation='biquintic',
                           collapse='median', algo=pca_annulus, delta_rot=1,
                           algo_options={}, f_range=None, transmission=None,
-                          mu_sigma=(0, 1), weights=None, plot=False,
+                          mu_sigma=(0, 1), weights=None, ndet=None, plot=False,
                           verbose=True, save=False, debug=False,
                           full_output=False):
-    """ Determine a first guess for the flux of a companion at a given position
-    in the cube by doing a simple grid search evaluating the reduced chi2.
+    """Determine a first guess for the flux of a companion at a given position\
+    in the cube by doing a simple grid search evaluating the reduced chi2 using\
+    the negative fake companion technique (i.e. the reduced chi2 is calculated\
+    in the post-processed frame after subtraction of a negative fake companion).
 
     Parameters
     ----------
     planet: numpy.array
-        The (x,y) position of the planet in the pca processed cube.
+        The (x,y) position of the planet in the processed cube.
     center: numpy.array
         The (x,y) position of the cube center.
     cube: 3d or 4d numpy ndarray
@@ -54,13 +56,13 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
         If the input cube is 4D, psfn must be either 3D or 4D. In either cases,
         the first dimension(s) must match those of the input cube.
     fwhm : float
-        The FHWM in pixels.
+        The FWHM in pixels.
     annulus_width: int, optional
         The width in pixels of the annulus on which the PCA is done.
     aperture_radius: int, optional
         The radius of the circular aperture in terms of the FWHM.
-    ncomp: int
-        The number of principal components.
+    ncomp: int, optional
+        The number of principal components, if the algorithm used is PCA.
     cube_ref : numpy ndarray, 3d, optional
         Reference library cube. For Reference Star Differential Imaging.
     svd_mode : {'lapack', 'randsvd', 'eigen', 'arpack'}, str optional
@@ -80,18 +82,38 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
         * ``spat-standard``: spatial mean centering plus scaling pixel values
           to unit variance (spatially).
 
-        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve 
-        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this 
-        involves a sort of c-ADI preprocessing, which (i) can be dangerous for 
-        datasets with low amount of rotation (strong self-subtraction), and (ii) 
+        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve
+        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this
+        involves a sort of c-ADI preprocessing, which (i) can be dangerous for
+        datasets with low amount of rotation (strong self-subtraction), and (ii)
         should probably be referred to as ARDI (i.e. not RDI stricto sensu).
-    fmerit : {'sum', 'stddev'}, string optional
-        Figure of merit to be used, if mu_sigma is set to None.
+    fmerit : {'sum', 'stddev', 'hessian'}, string optional
+        If mu_sigma is not provided nor set to True, this parameter determines
+        which figure of merit to be used:
+
+            * ``sum``: minimizes the sum of absolute residual intensities in the
+            aperture defined with `initial_state` and `aperture_radius`. More
+            details in [WER17]_.
+
+            * ``stddev``: minimizes the standard deviation of residual
+            intensities in the aperture defined with `initial_state` and
+            `aperture_radius`. More details in [WER17]_.
+
+            * ``hessian``: minimizes the sum of absolute values of the
+            determinant of the Hessian matrix calculated for each of the 4
+            pixels encompassing the first guess location defined with
+            `initial_state`. More details in [QUA15]_.
+
+        From experience: ``sum`` is more robust for high SNR companions (but
+        rather consider setting mu_sigma=True), while ``stddev`` tend to be more
+        reliable in presence of strong residual speckle noise. ``hessian`` is
+        expected to be more reliable in presence of extended signals around the
+        companion location.
     imlib : str, optional
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
     interpolation : str, optional
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
-    collapse : {'median', 'mean', 'sum', 'trimmean', None}, str or None, optional
+    collapse : {'median', 'mean', 'sum', 'trimmean', None}, str or None, opt
         Sets the way of collapsing the frames for producing a final image. If
         None then the cube of residuals is used when measuring the function of
         merit (instead of a single final frame).
@@ -109,7 +131,7 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
         dict (the latter are also kept as function arguments for compatibility
         with older versions of vip).
     f_range: numpy.array, optional
-        The range of tested flux values. If None, 20 values between 0 and 5000
+        The range of tested flux values. If None, 30 values between 1e-1 and 1e4
         are tested.
     transmission: numpy array, optional
         Array with 2 columns. First column is the radial separation in pixels.
@@ -125,6 +147,14 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
         If provided, the negative fake companion fluxes will be scaled according
         to these weights before injection in the cube. Can reflect changes in
         the observing conditions throughout the sequence.
+    ndet: int or None, optional
+        [only used if fmerit='hessian'] If not None, ndet should be the number
+        of pixel(s) along x and y around the first guess position for which the
+        determinant of the Hessian matrix is calculated. If odd, the pixel(s)
+        around the closest integer coordinates will be considered. If even, the
+        pixel(s) around the subpixel coordinates of the first guess location are
+        considered. The figure of merit is the absolute sum of the determinants.
+        If None, ndet is determined automatically to be max(1, round(fwhm/2)).
     plot: boolean, optional
         If True, the figure chi2 vs. flux is displayed.
     verbose: boolean
@@ -134,7 +164,7 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
     debug: bool, optional
         Whether to print details of the grid search
     full_output : bool, optional
-        Whether to also return the range of fluxes tested and their chi2r 
+        Whether to also return the range of fluxes tested and their chi2r
         values.
 
     Returns
@@ -142,17 +172,19 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
     res : tuple
         The polar coordinates and the flux(es) of the companion.
     f_range: 1d numpy.array
-        [full_output=True] The range of tested flux values. 
+        [full_output=True] The range of tested flux values.
     chi2r: 1d numpy.array
-        [full_output=True] The chi2r values corresponding to tested flux values. 
+        [full_output=True] The chi2r values corresponding to tested flux values.
     """
+
     def _grid_search_f(r0, theta0, ch, cube, angs, psfn, fwhm, annulus_width,
                        aperture_radius, ncomp, cube_ref=None, svd_mode='lapack',
                        scaling=None, fmerit='sum', imlib='vip-fft',
                        interpolation='lanczos4', collapse='median',
                        algo=pca_annulus, delta_rot=1, algo_options={},
                        f_range=np.geomspace(1e-1, 1e4, 30), transmission=None,
-                       mu_sigma=None, weights=None, verbose=True, debug=False):
+                       mu_sigma=None, weights=None, ndet=None, verbose=True,
+                       debug=False):
 
         chi2r = []
         if verbose:
@@ -169,12 +201,12 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
                 params = tuple(params+fluxes)
             else:
                 raise TypeError("If cube is 4d, channel index must be provided")
-            chi2r.append(chisquare(params, cube, angs, psfn, fwhm, annulus_width,
-                                   aperture_radius, (r0, theta0), ncomp,
-                                   cube_ref, svd_mode, scaling, fmerit, collapse,
-                                   algo, delta_rot, imlib, interpolation,
-                                   algo_options, transmission, mu_sigma, weights,
-                                   debug))
+            chi2r.append(chisquare(params, cube, angs, psfn, fwhm,
+                                   annulus_width, aperture_radius, (r0, theta0),
+                                   ncomp, cube_ref, svd_mode, scaling, fmerit,
+                                   collapse, algo, delta_rot, imlib,
+                                   interpolation, algo_options, transmission,
+                                   mu_sigma, weights, False, ndet, debug))
             if chi2r[j] > chi2r[j-1]:
                 counter += 1
             if counter == 4:
@@ -204,7 +236,8 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
                                algo=algo, delta_rot=delta_rot,
                                algo_options=algo_options, f_range=f_range,
                                transmission=transmission, mu_sigma=mu_sigma,
-                               weights=weights, verbose=verbose, debug=debug)
+                               weights=weights, ndet=ndet, verbose=verbose,
+                               debug=debug)
         chi2r = np.array(chi2r)
         f0 = f_range[chi2r.argmin()]
 
@@ -213,8 +246,9 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
             plt.title('$\\chi^2_{r}$ vs flux')
             plt.xlim(f_range[0], f_range[:chi2r.shape[0]].max())
             plt.ylim(chi2r.min()*0.9, chi2r.max()*1.1)
-            plt.plot(f_range[:chi2r.shape[0]], chi2r, linestyle='-', color='gray',
-                     marker='.', markerfacecolor='r', markeredgecolor='r')
+            plt.plot(f_range[:chi2r.shape[0]], chi2r, linestyle='-',
+                     color='gray', marker='.', markerfacecolor='r',
+                     markeredgecolor='r')
             plt.xlabel('flux')
             plt.ylabel(r'$\chi^2_r$')
             plt.grid('on')
@@ -238,17 +272,18 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
         for i in range(cube.shape[0]):
             if verbose:
                 print('Processing spectral channel {}...'.format(i))
-            chi2r_tmp = _grid_search_f(r0, theta0, i, cube, angs, psfn,
-                                       fwhm, annulus_width, aperture_radius,
-                                       ncomp, cube_ref=cube_ref, svd_mode=svd_mode,
+            chi2r_tmp = _grid_search_f(r0, theta0, i, cube, angs, psfn, fwhm,
+                                       annulus_width, aperture_radius, ncomp,
+                                       cube_ref=cube_ref, svd_mode=svd_mode,
                                        scaling=scaling, fmerit=fmerit,
                                        imlib=imlib, interpolation=interpolation,
                                        collapse=collapse, algo=algo,
                                        delta_rot=delta_rot,
-                                       algo_options=algo_options, f_range=f_range,
+                                       algo_options=algo_options,
+                                       f_range=f_range,
                                        transmission=transmission,
                                        mu_sigma=mu_sigma, weights=weights,
-                                       verbose=False, debug=False)
+                                       ndet=ndet, verbose=False, debug=False)
             chi2r.append(chi2r_tmp)
             chi2r_tmp = np.array(chi2r_tmp)
             f0.append(f_range[chi2r_tmp.argmin()])
@@ -292,19 +327,17 @@ def firstguess_from_coord(planet, center, cube, angs, psfn, fwhm, annulus_width,
 
 def firstguess_simplex(p, cube, angs, psfn, ncomp, fwhm, annulus_width,
                        aperture_radius, cube_ref=None, svd_mode='lapack',
-                       scaling=None, fmerit='sum', imlib='vip-fft',
-                       interpolation='lanczos4', collapse='median',
+                       scaling=None, fmerit='sum', imlib='skimage',
+                       interpolation='biquintic', collapse='median',
                        algo=pca_annulus, delta_rot=1, algo_options={},
                        p_ini=None, transmission=None, mu_sigma=(0, 1),
-                       weights=None, force_rPA=False, options=None,
+                       weights=None, force_rPA=False, ndet=None, options=None,
                        verbose=False, **kwargs):
-    """
-    Determine the position of a companion using the negative fake companion
-    technique and a standard minimization algorithm (Default=Nelder-Mead) .
+    """Determine the position of a companion using the negative fake companion\
+    technique and a standard minimization algorithm (Default=Nelder-Mead).
 
     Parameters
     ----------
-
     p : np.array
         Estimate of the candidate position.
     cube: 3d or 4d numpy ndarray
@@ -321,9 +354,9 @@ def firstguess_simplex(p, cube, angs, psfn, ncomp, fwhm, annulus_width,
         If the input cube is 4D, psfn must be either 3D or 4D. In either cases,
         the first dimension(s) must match those of the input cube.
     ncomp: int or None
-        The number of principal components.
+        The number of principal components to use, if the algorithm is PCA.
     fwhm : float
-        The FHWM in pixels.
+        The FWHM in pixels.
     annulus_width: int, optional
         The width in pixels of the annulus on which the PCA is done.
     aperture_radius: int, optional
@@ -347,18 +380,38 @@ def firstguess_simplex(p, cube, angs, psfn, ncomp, fwhm, annulus_width,
         * ``spat-standard``: spatial mean centering plus scaling pixel values
           to unit variance (spatially).
 
-        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve 
-        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this 
-        involves a sort of c-ADI preprocessing, which (i) can be dangerous for 
-        datasets with low amount of rotation (strong self-subtraction), and (ii) 
+        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve
+        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this
+        involves a sort of c-ADI preprocessing, which (i) can be dangerous for
+        datasets with low amount of rotation (strong self-subtraction), and (ii)
         should probably be referred to as ARDI (i.e. not RDI stricto sensu).
-    fmerit : {'sum', 'stddev'}, string optional
-        Figure of merit to be used, if mu_sigma is set to None.
+    fmerit : {'sum', 'stddev', 'hessian'}, string optional
+        If mu_sigma is not provided nor set to True, this parameter determines
+        which figure of merit to be used:
+
+            * ``sum``: minimizes the sum of absolute residual intensities in the
+            aperture defined with `initial_state` and `aperture_radius`. More
+            details in [WER17]_.
+
+            * ``stddev``: minimizes the standard deviation of residual
+            intensities in the aperture defined with `initial_state` and
+            `aperture_radius`. More details in [WER17]_.
+
+            * ``hessian``: minimizes the sum of absolute values of the
+            determinant of the Hessian matrix calculated for each of the 4
+            pixels encompassing the first guess location defined with
+            `initial_state`. More details in [QUA15]_.
+
+        From experience: ``sum`` is more robust for high SNR companions (but
+        rather consider setting mu_sigma=True), while ``stddev`` tend to be more
+        reliable in presence of strong residual speckle noise. ``hessian`` is
+        expected to be more reliable in presence of extended signals around the
+        companion location.
     imlib : str, optional
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
     interpolation : str, optional
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
-    collapse : {'median', 'mean', 'sum', 'trimmean', None}, str or None, optional
+    collapse : {'median', 'mean', 'sum', 'trimmean', None}, str or None, opt
         Sets the way of collapsing the frames for producing a final image. If
         None then the cube of residuals is used when measuring the function of
         merit (instead of a single final frame).
@@ -393,6 +446,14 @@ def firstguess_simplex(p, cube, angs, psfn, ncomp, fwhm, annulus_width,
         the observing conditions throughout the sequence.
     force_rPA: bool, optional
         Whether to only search for optimal flux, provided (r,PA).
+    ndet: int or None, optional
+        [only used if fmerit='hessian'] If not None, ndet should be the number
+        of pixel(s) along x and y around the first guess position for which the
+        determinant of the Hessian matrix is calculated. If odd, the pixel(s)
+        around the closest integer coordinates will be considered. If even, the
+        pixel(s) around the subpixel coordinates of the first guess location are
+        considered. The figure of merit is the absolute sum of the determinants.
+        If None, ndet is determined automatically to be max(1, round(fwhm/2)).
     options: dict, optional
         The scipy.optimize.minimize options.
     verbose : boolean, optional
@@ -423,7 +484,7 @@ def firstguess_simplex(p, cube, angs, psfn, ncomp, fwhm, annulus_width,
                                           collapse, algo, delta_rot, imlib,
                                           interpolation, algo_options,
                                           transmission, mu_sigma, weights,
-                                          force_rPA),
+                                          force_rPA, ndet),
                     method='Nelder-Mead', options=options, **kwargs)
 
     if verbose:
@@ -431,30 +492,24 @@ def firstguess_simplex(p, cube, angs, psfn, ncomp, fwhm, annulus_width,
     return solu
 
 
-def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
+def firstguess(cube, angs, psfn, planets_xy_coord, ncomp=1, fwhm=4,
                annulus_width=4, aperture_radius=1, cube_ref=None,
-               svd_mode='lapack', scaling=None, fmerit='sum', imlib='vip-fft',
-               interpolation='lanczos4', collapse='median', algo=pca_annulus,
-               delta_rot=1, p_ini=None, f_range=None, transmission=None,
-               mu_sigma=True, wedge=None, weights=None, force_rPA=False,
+               svd_mode='lapack', scaling=None, fmerit='sum', imlib='skimage',
+               interpolation='biquintic', collapse='median', algo=pca_annulus,
+               delta_rot=1, f_range=None, transmission=None, mu_sigma=True,
+               wedge=None, weights=None, force_rPA=False, ndet=None,
                algo_options={}, simplex=True, simplex_options=None, plot=False,
                verbose=True, save=False):
-    """ Determines a first guess for the position and the flux of a planet, as
-    explained in [WER17]_.
+    """Determine a first guess for the position and the flux of a planet using\
+    the negative fake companion technique, as explained in [WER17]_.
 
-    We process the cube without injecting any negative fake companion.
-    This leads to the visual detection of the planet(s). For each of them,
-    one can estimate the (x,y) coordinates in pixel for the position of the
-    star, as well as the planet(s).
-
-    From the (x,y) coordinates in pixels for the star and planet(s), we can
-    estimate a preliminary guess for the position and flux for each planet
-    by using the method "firstguess_from_coord". The argument "f_range" allows
-    to indicate prior limits for the flux (optional, default: None).
-    This step can be reiterate to refine the preliminary guess for the flux.
-
-    We can go a step further by using a Simplex Nelder_Mead minimization to
-    estimate the first guess based on the preliminary guess.
+    This first requires processing the cube without injecting any negative fake
+    companion. Once planets or planet candidates are identified, their initial
+    guess (x,y) coordinates can be provided to this function. A preliminary flux
+    guess is then found for each planet by using the method
+    ``firstguess_from_coord`` called within this function. Optionally, a Simplex
+    Nelder_Mead minimization is used for a refined estimate of position and flux
+    based on the preliminary guesses.
 
     Parameters
     ----------
@@ -471,15 +526,14 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
         unsaturated and conditions were variable.
         If the input cube is 4D, psfn must be either 3D or 4D. In either cases,
         the first dimension(s) must match those of the input cube.
-    ncomp : int or 1d numpy array of int
-        The number of principal components. If cube is a 4D cube, ncomp can be a
-        list of integers, with length matching the first dimension of the cube.
     planets_xy_coord: array or list
         The list of (x,y) positions of the planets.
-    plsc: float, optional
-        The platescale, in arcsec per pixel.
+    ncomp : int or 1d numpy array of int, optional
+        The number of principal components to use, if the algorithm is PCA. If
+        the input cube is 4D, ncomp can be a list of integers, with length
+        matching the first dimension of the cube.
     fwhm : float, optional
-        The FHWM in pixels.
+        The FWHM in pixels.
     annulus_width: int, optional
         The width in pixels of the annulus on which the PCA is done.
     aperture_radius: int, optional
@@ -503,13 +557,33 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
         * ``spat-standard``: spatial mean centering plus scaling pixel values
           to unit variance (spatially).
 
-        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve 
-        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this 
-        involves a sort of c-ADI preprocessing, which (i) can be dangerous for 
-        datasets with low amount of rotation (strong self-subtraction), and (ii) 
+        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve
+        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this
+        involves a sort of c-ADI preprocessing, which (i) can be dangerous for
+        datasets with low amount of rotation (strong self-subtraction), and (ii)
         should probably be referred to as ARDI (i.e. not RDI stricto sensu).
-    fmerit : {'sum', 'stddev'}, string optional
-        Figure of merit to be used, if mu_sigma is set to None.
+    fmerit : {'sum', 'stddev', 'hessian'}, string optional
+        If mu_sigma is not provided nor set to True, this parameter determines
+        which figure of merit to be used:
+
+            * ``sum``: minimizes the sum of absolute residual intensities in the
+            aperture defined with `initial_state` and `aperture_radius`. More
+            details in [WER17]_.
+
+            * ``stddev``: minimizes the standard deviation of residual
+            intensities in the aperture defined with `initial_state` and
+            `aperture_radius`. More details in [WER17]_.
+
+            * ``hessian``: minimizes the sum of absolute values of the
+            determinant of the Hessian matrix calculated for each of the 4
+            pixels encompassing the first guess location defined with
+            `initial_state`. More details in [QUA15]_.
+
+        From experience: ``sum`` is more robust for high SNR companions (but
+        rather consider setting mu_sigma=True), while ``stddev`` tend to be more
+        reliable in presence of strong residual speckle noise. ``hessian`` is
+        expected to be more reliable in presence of extended signals around the
+        companion location.
     imlib : str, optional
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
     interpolation : str, optional
@@ -525,8 +599,6 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
     delta_rot: float, optional
         If algo is set to pca_annular, delta_rot is the angular threshold used
         to select frames in the PCA library (see description of pca_annular).
-    p_ini: numpy.array
-        Position (r, theta) of the circular aperture center.
     f_range: numpy.array, optional
         The range of flux tested values. If None, 20 values between 0 and 5000
         are tested.
@@ -556,6 +628,14 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
         the observing conditions throughout the sequence.
     force_rPA: bool, optional
         Whether to only search for optimal flux, provided (r,PA).
+    ndet: int or None, optional
+        [only used if fmerit='hessian'] If not None, ndet should be the number
+        of pixel(s) along x and y around the first guess position for which the
+        determinant of the Hessian matrix is calculated. If odd, the pixel(s)
+        around the closest integer coordinates will be considered. If even, the
+        pixel(s) around the subpixel coordinates of the first guess location are
+        considered. The figure of merit is the absolute sum of the determinants.
+        If None, ndet is determined automatically to be max(1, round(fwhm/2)).
     algo_options: dict, opt
         Dictionary with additional parameters for the pca algorithm (e.g. tol,
         min_frames_lib, max_frames_lib). Note: arguments such as svd_mode,
@@ -581,10 +661,9 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
 
     Note
     ----
-    Polar angle is not the conventional NORTH-TO-EAST P.A., but the 
+    Polar angle is not the conventional NORTH-TO-EAST P.A., but the
     counter-clockwise angle measured from the positive x axis.
     """
-
     if cube.ndim != 3 and cube.ndim != 4:
         raise TypeError("Input cube is not 3D nor 4D")
 
@@ -613,21 +692,21 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
     else:
         norm_weights = weights
 
-    for index_planet in range(n_planet):
+    for i_planet in range(n_planet):
         if verbose:
             print('\n'+sep)
-            print('             Planet {}           '.format(index_planet))
+            print('             Planet {}           '.format(i_planet))
             print(sep+'\n')
             msg2 = 'Planet {}: flux estimation at the position [{},{}], '
             msg2 += 'running ...'
-            print(msg2.format(index_planet, planets_xy_coord[index_planet, 0],
-                              planets_xy_coord[index_planet, 1]))
+            print(msg2.format(i_planet, planets_xy_coord[i_planet, 0],
+                              planets_xy_coord[i_planet, 1]))
         # Measure mu and sigma once in the annulus (instead of each MCMC step)
         if isinstance(mu_sigma, tuple):
             if len(mu_sigma) != 2:
                 raise TypeError("If a tuple, mu_sigma must have 2 elements")
         elif mu_sigma is not None:
-            xy = planets_xy_coord[index_planet]-center_xy_coord
+            xy = planets_xy_coord[i_planet]-center_xy_coord
             r0 = np.sqrt(xy[0]**2 + xy[1]**2)
             theta0 = np.mod(np.arctan2(xy[1], xy[0]) / np.pi*180, 360)
             mu_sigma = get_mu_and_sigma(cube, angs, ncomp, annulus_width,
@@ -640,7 +719,7 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
                                         collapse=collapse, weights=norm_weights,
                                         algo_options=algo_options)
 
-        res_init = firstguess_from_coord(planets_xy_coord[index_planet],
+        res_init = firstguess_from_coord(planets_xy_coord[i_planet],
                                          center_xy_coord, cube, angs,
                                          psfn, fwhm, annulus_width,
                                          aperture_radius, ncomp,
@@ -653,17 +732,18 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
                                          algo_options=algo_options,
                                          transmission=transmission,
                                          mu_sigma=mu_sigma, weights=weights,
-                                         plot=plot, verbose=verbose, save=save)
+                                         ndet=ndet, plot=plot, verbose=verbose,
+                                         save=save)
 
         r_pre = res_init[0]
         theta_pre = res_init[1]
         f_pre = res_init[2:]
 
         if verbose:
-            msg3a = 'Planet {}: preliminary position guess: (r, theta)=({:.1f}, '
-            msg3a += '{:.1f})'
-            print(msg3a.format(index_planet, r_pre, theta_pre))
-            msg3b = 'Planet {}: preliminary flux guess: '.format(index_planet)
+            msg3a = 'Planet {}: preliminary position guess: (r, theta)=({:.1f},'
+            msg3a += ' {:.1f})'
+            print(msg3a.format(i_planet, r_pre, theta_pre))
+            msg3b = 'Planet {}: preliminary flux guess: '.format(i_planet)
             for z in range(len(f_pre)):
                 msg3b += '{:.1f}'.format(f_pre[z])
                 if z < len(f_pre)-1:
@@ -674,7 +754,7 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
             if verbose:
                 msg4 = 'Planet {}: Simplex Nelder-Mead minimization, '
                 msg4 += 'running ...'
-                print(msg4.format(index_planet))
+                print(msg4.format(i_planet))
 
             if simplex_options is None:
                 simplex_options = {'xatol': 1e-6, 'fatol': 1e-6, 'maxiter': 800,
@@ -687,52 +767,52 @@ def firstguess(cube, angs, psfn, ncomp, planets_xy_coord, fwhm=4,
                                      imlib=imlib, interpolation=interpolation,
                                      collapse=collapse, algo=algo,
                                      delta_rot=delta_rot,
-                                     algo_options=algo_options, p_ini=p_ini,
+                                     algo_options=algo_options,
                                      transmission=transmission,
                                      mu_sigma=mu_sigma, weights=weights,
-                                     force_rPA=force_rPA,
+                                     force_rPA=force_rPA, ndet=ndet,
                                      options=simplex_options, verbose=False)
             if force_rPA:
-                r_0[index_planet], theta_0[index_planet] = (r_pre, theta_pre)
-                f_0[index_planet], = res.x
+                r_0[i_planet], theta_0[i_planet] = (r_pre, theta_pre)
+                f_0[i_planet] = res.x[:]
             else:
-                r_0[index_planet] = res.x[0]
-                theta_0[index_planet] = res.x[1]
+                r_0[i_planet] = res.x[0]
+                theta_0[i_planet] = res.x[1]
                 if cube.ndim == 3:
-                    f_0[index_planet] = res.x[2]
+                    f_0[i_planet] = res.x[2]
                 else:
-                    f_0[index_planet] = res.x[2:]
+                    f_0[i_planet] = res.x[2:]
             if verbose:
                 msg5 = 'Planet {}: Success: {}, nit: {}, nfev: {}, chi2r: {}'
-                print(msg5.format(index_planet, res.success, res.nit, res.nfev,
+                print(msg5.format(i_planet, res.success, res.nit, res.nfev,
                                   res.fun))
                 print('message: {}'.format(res.message))
 
         else:
             if verbose:
                 msg4bis = 'Planet {}: Simplex Nelder-Mead minimization skipped.'
-                print(msg4bis.format(index_planet))
-            r_0[index_planet] = r_pre
-            theta_0[index_planet] = theta_pre
+                print(msg4bis.format(i_planet))
+            r_0[i_planet] = r_pre
+            theta_0[i_planet] = theta_pre
             if cube.ndim == 3:
-                f_0[index_planet] = f_pre[0]
+                f_0[i_planet] = f_pre[0]
             else:
-                f_0[index_planet] = f_pre
+                f_0[i_planet] = f_pre
 
         if verbose:
             centy, centx = frame_center(cube[0])
-            posy = r_0 * np.sin(np.deg2rad(theta_0[index_planet])) + centy
-            posx = r_0 * np.cos(np.deg2rad(theta_0[index_planet])) + centx
-            msg6 = 'Planet {}: simplex result: (r, theta, '.format(index_planet)
+            posy = r_0 * np.sin(np.deg2rad(theta_0[i_planet])) + centy
+            posx = r_0 * np.cos(np.deg2rad(theta_0[i_planet])) + centx
+            msg6 = 'Planet {} simplex result: (r, theta, '.format(i_planet)
             if cube.ndim == 3:
-                msg6 += 'f)=({:.3f}, {:.3f}, {:.3f})'.format(r_0[index_planet],
-                                                             theta_0[index_planet],
-                                                             f_0[index_planet])
+                msg6 += 'f)=({:.3f}, {:.3f}, {:.3f})'.format(r_0[i_planet],
+                                                             theta_0[i_planet],
+                                                             f_0[i_planet])
             else:
                 msg6b = '('
                 for z in range(cube.shape[0]):
                     msg6 += 'f{}'.format(z)
-                    msg6b += '{:.3f}'.format(f_0[index_planet, z])
+                    msg6b += '{:.3f}'.format(f_0[i_planet, z])
                     if z < cube.shape[0]-1:
                         msg6 += ', '
                         msg6b += ', '

@@ -2,9 +2,7 @@
 """Module for the post-processing FMMF algorithm."""
 
 __author__ = "Thomas Bédrine"
-__all__ = [
-    "FMMFBuilder",
-]
+__all__ = ["FMMFBuilder", "PPFMMF"]
 
 from typing import Optional
 from dataclasses import dataclass
@@ -14,12 +12,12 @@ from dataclass_builder import dataclass_builder
 
 from .dataset import Dataset
 from .postproc import PostProc
-from ..invprob import fmmf, FMMFParams
+from ..invprob import fmmf, FMMF_Params
 from ..config.utils_conf import algo_calculates_decorator as calculates
 
 
 @dataclass
-class PPFMMF(PostProc, FMMFParams):
+class PPFMMF(PostProc, FMMF_Params):
     """Post-processing forward model matching filter algorithm."""
 
     _algo_name: str = "fmmf"
@@ -50,6 +48,7 @@ class PPFMMF(PostProc, FMMFParams):
             If True prints to stdout intermediate info.
 
         """
+        self.snr_map = None
         self._update_dataset(dataset)
 
         if self.dataset.fwhm is None:
@@ -59,8 +58,9 @@ class PPFMMF(PostProc, FMMFParams):
         if nproc is not None:
             self.nproc = nproc
 
-        params_dict = self._create_parameters_dict(FMMFParams)
-        res = fmmf(algo_params=self)
+        params_dict = self._create_parameters_dict(FMMF_Params)
+        all_params = {"algo_params": self}
+        res = fmmf(**all_params)
 
         self.frame_final, self.snr_map = res
 

@@ -1,21 +1,23 @@
 #! /usr/bin/env python
-
 """
 Module with various fits handling functions.
 """
 
 
-__author__ = 'Carlos Alberto Gomez Gonzalez'
-__all__ = ['open_fits',
-           'info_fits',
-           'write_fits',
-           'verify_fits',
-           'byteswap_array']
+__author__ = "C. A. Gomez Gonzalez, T. Bédrine, V. Christiaens, I. Hammond"
+__all__ = ["open_fits", "info_fits", "write_fits", "verify_fits",
+           "byteswap_array"]
 
 
-import os
+from os.path import isfile, exists
+from os import remove
+
 import numpy as np
-from astropy.io import fits as ap_fits
+from astropy.io.fits.convenience import writeto
+from astropy.io.fits.hdu.hdulist import fitsopen, HDUList
+from astropy.io.fits.hdu.image import ImageHDU
+
+from ..config.paramenum import ALL_FITS
 
 
 def open_fits(fitsfilename, n=0, header=False, ignore_missing_end=False,
@@ -29,7 +31,8 @@ def open_fits(fitsfilename, n=0, header=False, ignore_missing_end=False,
     fitsfilename : string or pathlib.Path
         Name of the fits file or ``pathlib.Path`` object
     n : int, optional
-        It chooses which HDU to open. Default is the first one.
+        It chooses which HDU to open. Default is the first one. If n is equal
+        to -2, opens and returns all extensions.
     header : bool, optional
         Whether to return the header along with the data or not.
     precision : numpy dtype, optional
@@ -50,42 +53,101 @@ def open_fits(fitsfilename, n=0, header=False, ignore_missing_end=False,
 
     Returns
     -------
-    hdulist : hdulist
-        [memmap=True] FITS file ``n`` hdulist.
-    data : numpy ndarray
-        [memmap=False] Array containing the frames of the fits-cube.
-    header : dict
+    hdulist : HDU or HDUList
+        [memmap=True] FITS file ``n`` hdulist. If n equals -2, returns the whole
+        hdulist.
+    data : numpy ndarray or list of numpy ndarrays
+        [memmap=False] Array containing the frames of the fits-cube. If n
+        equals -2, returns a list of all arrays.
+    header : dict or list of dict
         [memmap=False, header=True] Dictionary containing the fits header.
+        If n equals -2, returns a list of all dictionaries.
 
     """
     fitsfilename = str(fitsfilename)
-    if not os.path.isfile(fitsfilename):
-        fitsfilename += '.fits'
+    if not isfile(fitsfilename):
+        fitsfilename += ".fits"
 
-    hdulist = ap_fits.open(fitsfilename, ignore_missing_end=ignore_missing_end,
+    try:
+        hdulist = fitsopen(fitsfilename, ignore_missing_end=ignore_missing_end,
                            memmap=True, **kwargs)
+    except ValueError:
+        # If BZERO/BSCALE/BLANK header keywords present HDU can’t load as memmap
+        hdulist = fitsopen(fitsfilename, ignore_missing_end=ignore_missing_end,
+                           memmap=False, **kwargs)
 
-    if return_memmap:
-        return hdulist[n]
-    else:
-        data = hdulist[n].data
-        data = np.array(data, dtype=precision)
+    # Opening all extensions in a MEF
+    if n == ALL_FITS:
+        if return_memmap:
+            return hdulist
+        data_list = []
+        header_list = []
+
+        for index, element in enumerate(hdulist):
+            data, head = _return_data_fits(hdulist=hdulist, index=index,
+                                           header=header, precision=precision,
+                                           verbose=verbose)
+            data_list.append(data)
+            header_list.append(head)
+
         hdulist.close()
         if header:
-            header = hdulist[n].header
             if verbose:
-                print("Fits HDU-{} data and header successfully loaded. "
-                      "Data shape: {}".format(n, data.shape))
-            return data, header
+                msg = f"All {len(hdulist)} FITS HDU data and headers "
+                msg += "successfully loaded."
+                print(msg)
+            return data_list, header_list
         else:
             if verbose:
-                print("Fits HDU-{} data successfully loaded. "
-                      "Data shape: {}".format(n, data.shape))
+                print(f"All {len(hdulist)} FITS HDU data successfully loaded.")
+            return data_list
+
+    # Opening only a specified extension
+    else:
+        if return_memmap:
+            return hdulist[n]
+
+        data, head = _return_data_fits(hdulist=hdulist, index=n, header=header,
+                                       precision=precision, verbose=verbose)
+        hdulist.close()
+        if header:
+            return data, head
+        else:
             return data
 
 
+def _return_data_fits(hdulist: HDUList,
+                      index: int,
+                      header: bool = False,
+                      precision=np.float32,
+                      verbose: bool = True):
+    """
+    Subfunction used to return data (and header) from a given index.
+
+    Parameters
+    ----------
+    hdulist : HDUList
+        List of FITS cubes with their headers.
+    index : int
+        The wanted index to extract.
+    """
+    data = hdulist[index].data
+    data = np.array(data, dtype=precision)
+    head = hdulist[index].header
+
+    if verbose:
+        if header:
+            print(f"FITS HDU-{index} data and header successfully loaded. "
+                  f"Data shape: {data.shape}")
+        else:
+            print(f"FITS HDU-{index} data successfully loaded. "
+                  f"Data shape: {data.shape}")
+
+    return data, head
+
+
 def byteswap_array(array):
-    """ FITS files are stored in big-endian byte order. All modern CPUs are
+    """FITS files are stored in big-endian byte order. All modern CPUs are
     little-endian byte order, so at some point you have to byteswap the data.
     Some FITS readers (cfitsio, the fitsio python module) do the byteswap when
     reading the data from disk to memory, so we get numpy arrays in native
@@ -110,7 +172,7 @@ def byteswap_array(array):
     Note
     ----
     More info about byteswapping here:
-    http://docs.scipy.org/doc/numpy-1.10.1/user/basics.byteswapping.html
+    https://docs.scipy.org/doc/numpy-1.10.1/user/basics.byteswapping.html
 
     """
     array_out = array.byteswap().newbyteorder()
@@ -130,7 +192,7 @@ def info_fits(fitsfilename, **kwargs):
         "output_verify" can be set to ignore, in case of non-standard header.
 
     """
-    with ap_fits.open(fitsfilename, memmap=True, **kwargs) as hdulist:
+    with fitsopen(fitsfilename, memmap=True, **kwargs) as hdulist:
         hdulist.info()
 
 
@@ -146,14 +208,14 @@ def verify_fits(fitsfilename):
     """
     if isinstance(fitsfilename, list):
         for ffile in fitsfilename:
-            with ap_fits.open(ffile) as f:
+            with fitsopen(ffile) as f:
                 f.verify()
     else:
-        with ap_fits.open(fitsfilename) as f:
+        with fitsopen(fitsfilename) as f:
             f.verify()
 
 
-def write_fits(fitsfilename, array, header=None, output_verify='exception',
+def write_fits(fitsfilename, array, header=None, output_verify="exception",
                precision=np.float32, verbose=True):
     """
     Write array and header into FITS file.
@@ -181,20 +243,20 @@ def write_fits(fitsfilename, array, header=None, output_verify='exception',
 
     """
 
-    if not fitsfilename.endswith('.fits'):
-        fitsfilename += '.fits'
+    if not fitsfilename.endswith(".fits"):
+        fitsfilename += ".fits"
 
     res = "saved"
-    if os.path.exists(fitsfilename):
-        os.remove(fitsfilename)
-        res = 'overwritten'
+    if exists(fitsfilename):
+        remove(fitsfilename)
+        res = "overwritten"
 
     if isinstance(array, tuple):
-        new_hdul = ap_fits.HDUList()
+        new_hdul = HDUList()
         if header is None:
-            header = [None]*len(array)
+            header = [None] * len(array)
         elif not isinstance(header, tuple):
-            header = [header]*len(array)
+            header = [header] * len(array)
         elif len(header) != len(array):
             msg = "If input header is a tuple, it should have the same length "
             msg += "as tuple of arrays."
@@ -202,12 +264,12 @@ def write_fits(fitsfilename, array, header=None, output_verify='exception',
 
         for i in range(len(array)):
             array_tmp = array[i].astype(precision, copy=False)
-            new_hdul.append(ap_fits.ImageHDU(array_tmp, header=header[i]))
+            new_hdul.append(ImageHDU(array_tmp, header=header[i]))
 
         new_hdul.writeto(fitsfilename, output_verify=output_verify)
     else:
         array = array.astype(precision, copy=False)
-        ap_fits.writeto(fitsfilename, array, header, output_verify)
+        writeto(fitsfilename, array, header, output_verify)
 
     if verbose:
-        print("Fits file successfully {}".format(res))
+        print(f"FITS file successfully {res}")

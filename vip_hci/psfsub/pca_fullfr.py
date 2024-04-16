@@ -37,31 +37,48 @@ Options :
    | `https://arxiv.org/abs/0909.4061
      <https://arxiv.org/abs/0909.4061>`_
 
+.. [REN23]
+   | Ren 2023
+   | **Karhunen-Loève data imputation in high-contrast imaging**
+   | *Astronomy & Astrophysics, Volume 679, p. 8*
+   | `https://arxiv.org/abs/2308.16912
+     <https://arxiv.org/abs/2308.16912>`_
+
 """
 
-__author__ = "Carlos Alberto Gomez Gonzalez, Valentin Christiaens, Thomas Bédrine"
-__all__ = ["pca", "PCAParams"]
+__author__ = "C.A. Gomez Gonzalez, V. Christiaens, T. Bédrine"
+__all__ = ["pca", "PCA_Params"]
 
 import numpy as np
 from multiprocessing import cpu_count
-from typing import Tuple, Union
+from typing import Tuple, Union, List
 from dataclasses import dataclass
-from strenum import LowercaseStrEnum as LowEnum
+from enum import Enum
 from .svd import svd_wrapper, SVDecomposer
 from .utils_pca import pca_incremental, pca_grid
-from ..var.paramenum import SvdMode, Adimsdi, Interpolation, Imlib, Collapse
+from ..config import (timing, time_ini, check_enough_memory, Progressbar,
+                      check_array)
+from ..config.paramenum import (
+    SvdMode,
+    Adimsdi,
+    Interpolation,
+    Imlib,
+    Collapse,
+    ALGO_KEY,
+)
+from ..config.utils_conf import pool_map, iterable
+from ..config.utils_param import setup_parameters, separate_kwargs_dict
 from ..preproc.derotation import _find_indices_adi, _compute_pa_thresh
 from ..preproc import cube_rescaling_wavelengths as scwave
 from ..preproc import (
     cube_derotate,
     cube_collapse,
+    cube_subtract_sky_pca,
     check_pa_vector,
     check_scal_vector,
     cube_crop_frames,
-    cube_subtract_sky_pca,
 )
-from ..config import timing, time_ini, check_enough_memory, Progressbar, check_array
-from ..config.utils_conf import pool_map, iterable
+from ..stats import descriptive_stats
 from ..var import (
     frame_center,
     dist,
@@ -70,16 +87,82 @@ from ..var import (
     cube_filter_lowpass,
     mask_circle,
 )
-from ..var.object_utils import setup_parameters, separate_kwargs_dict
-from ..stats import descriptive_stats
 
 
 @dataclass
-class PCAParams:
+class PCA_Params:
     """
     Set of parameters for the PCA module.
 
+    See function `pca` below for the documentation.
+    """
+
+    cube: np.ndarray = None
+    angle_list: np.ndarray = None
+    cube_ref: np.ndarray = None
+    scale_list: np.ndarray = None
+    ncomp: Union[Tuple, List, float, int] = 1
+    svd_mode: Enum = SvdMode.LAPACK
+    scaling: Enum = None
+    mask_center_px: int = None
+    source_xy: Tuple[int] = None
+    delta_rot: int = None
+    fwhm: float = 4
+    adimsdi: Enum = Adimsdi.SINGLE
+    crop_ifs: bool = True
+    imlib: Enum = Imlib.VIPFFT
+    imlib2: Enum = Imlib.VIPFFT
+    interpolation: Enum = Interpolation.LANCZOS4
+    collapse: Enum = Collapse.MEDIAN
+    collapse_ifs: Enum = Collapse.MEAN
+    ifs_collapse_range: Union[str, Tuple[int]] = "all"
+    mask_rdi: np.ndarray = None
+    check_memory: bool = True
+    batch: Union[int, float] = None
+    nproc: int = 1
+    full_output: bool = False
+    verbose: bool = True
+    weights: np.ndarray = None
+    left_eigv: bool = False
+    min_frames_pca: int = 10
+    cube_sig: np.ndarray = None
+
+
+def pca(*all_args: List, **all_kwargs: dict):
+    """Full-frame PCA algorithm applied to PSF substraction.
+
+    The reference PSF and the quasi-static speckle pattern are modeled using
+    Principal Component Analysis. Depending on the input parameters this PCA
+    function can work in ADI, RDI or mSDI (IFS data) mode.
+
+    ADI: the target ``cube`` itself is used to learn the PCs and to obtain a
+    low-rank approximation model PSF (star + speckles). Both `cube_ref`` and
+    ``scale_list`` must be None. The full-frame ADI-PCA implementation is based
+    on [AMA12]_ and [SOU12]_. If ``batch`` is provided then the cube is
+    processed with incremental PCA as described in [GOM17]_.
+
+    (ADI+)RDI: if a reference cube is provided (``cube_ref``), its PCs are used
+    to reconstruct the target frames to obtain the model PSF (star + speckles).
+
+    (ADI+)mSDI (IFS data): if a scaling vector is provided (``scale_list``) and
+    the cube is a 4d array [# channels, # adi-frames, Y, X], it's assumed it
+    contains several multi-spectral frames acquired in pupil-stabilized mode.
+    A single or two stages PCA can be performed, depending on ``adimsdi``, as
+    explained in [CHR19]_.
+
     Parameters
+    ----------
+    all_args: list, optional
+        Positionnal arguments for the PCA algorithm. Full list of parameters
+        below.
+    all_kwargs: dictionary, optional
+        Mix of keyword arguments that can initialize a PCA_Params and the
+        optional 'rot_options' dictionnary (with keyword values ``border_mode``,
+        ``mask_val``, ``edge_blend``, ``interp_zeros``, ``ker``; see docstring
+        of ``vip_hci.preproc.frame_rotate``). Can also contain a PCA_Params
+        dictionary named `algo_params`.
+
+    PCA parameters
     ----------
     cube : str or numpy ndarray, 3d or 4d
         Input cube (ADI or ADI+mSDI). If 4D, the first dimension should be
@@ -101,7 +184,7 @@ class PCAParams:
         other wavelengths in the cube (more thorough approaches can be used
         to get the scaling factors, e.g. with
         ``vip_hci.preproc.find_scal_vector``).
-    ncomp : int, float or tuple of int/None, or list, optional
+    ncomp : int, float, tuple of int/None, or list, optional
         How many PCs are used as a lower-dimensional subspace to project the
         target frames.
 
@@ -112,23 +195,26 @@ class PCAParams:
         estimated). If ``ncomp`` is a tuple of two integers, then it
         corresponds to an interval of PCs in which final residual frames are
         computed (optionally, if a tuple of 3 integers is passed, the third
-        value is the step). When ``source_xy`` is not None, then the S/Ns
-        (mean value in a 1xFWHM circular aperture) of the given
-        (X,Y) coordinates are computed.
+        value is the step). If ``ncomp`` is a list of int, these will be used to
+        calculate residual frames. When ``ncomp`` is a tuple or list, and
+        ``source_xy`` is not None, then the S/Ns (mean value in a 1xFWHM
+        circular aperture) of the given (X,Y) coordinates are computed.
 
         * ADI+RDI (``cube`` and ``cube_ref`` are 3d arrays): ``ncomp`` is the
         number of PCs obtained from ``cube_ref``. If ``ncomp`` is a tuple,
         then it corresponds to an interval of PCs (obtained from ``cube_ref``)
-        in which final residual frames are computed. If ``source_xy`` is not
-        None, then the S/Ns (mean value in a 1xFWHM circular aperture) of the
-        given (X,Y) coordinates are computed.
+        in which final residual frames are computed. If ``ncomp`` is a list of
+        int, these will be used to calculate residual frames. When ``ncomp`` is
+        a tuple or list, and ``source_xy`` is not None, then the S/Ns (mean
+        value in a 1xFWHM circular aperture) of the given (X,Y) coordinates are
+        computed.
 
         * ADI or ADI+RDI (``cube`` is a 4d array): same input format allowed as
         above. If ``ncomp`` is a list with the same length as the number of
         channels, each element of the list will be used as ``ncomp`` value
         (be it int, float or tuple) for each spectral channel. If not a
-        list, the same value of ``ncomp`` will be used for all spectral
-        channels (be it int, float or tuple).
+        list or a list with a different length as the number of spectral
+        channels, these will be tested for all spectral channels respectively.
 
         * ADI+mSDI (``cube`` is a 4d array and ``adimsdi="single"``): ``ncomp``
         is the number of PCs obtained from the whole set of frames
@@ -136,9 +222,10 @@ class PCAParams:
         (0, 1] then it corresponds to the desired CEVR, and the corresponding
         number of components will be estimated. If ``ncomp`` is a tuple, then
         it corresponds to an interval of PCs in which final residual frames
-        are computed. If ``source_xy`` is not None, then the S/Ns (mean value
-        in a 1xFWHM circular aperture) of the given (X,Y) coordinates are
-        computed.
+        are computed. If ``ncomp`` is a list of int, these will be used to
+        calculate residual frames. When ``ncomp`` is a tuple or list, and
+        ``source_xy`` is not None, then the S/Ns (mean value in a 1xFWHM
+        circular aperture) of the given (X,Y) coordinates are computed.
 
         * ADI+mSDI  (``cube`` is a 4d array and ``adimsdi="double"``): ``ncomp``
         must be a tuple, where the first value is the number of PCs obtained
@@ -149,9 +236,9 @@ class PCAParams:
         None then the second PCA stage is skipped and the residuals are
         de-rotated and combined).
 
-    svd_mode : LowerCaseStrEnum, see `vip_hci.var.paramenum.SvdMode`
+    svd_mode : Enum, see `vip_hci.config.paramenum.SvdMode`
         Switch for the SVD method/library to be used.
-    scaling : LowerCaseStrEnum, see `vip_hci.var.paramenum.Scaling`
+    scaling : Enum, see `vip_hci.config.paramenum.Scaling`
         Pixel-wise scaling mode using ``sklearn.preprocessing.scale``
         function. If set to None, the input matrix is left untouched.
     mask_center_px : None or int
@@ -165,11 +252,11 @@ class PCAParams:
         given (X,Y) coordinates are computed.
     delta_rot : int, optional
         Factor for tuning the parallactic angle threshold, expressed in FWHM.
-        Default is 1 (excludes 1xFHWM on each side of the considered frame).
+        Default is 1 (excludes 1xFWHM on each side of the considered frame).
     fwhm : float, list or 1d numpy array, optional
-        Known size of the FHWM in pixels to be used. Default value is 4.
+        Known size of the FWHM in pixels to be used. Default value is 4.
         Can be a list or 1d numpy array for a 4d input cube with no scale_list.
-    adimsdi : LowerCaseStrEnum, see `vip_hci.var.paramenum.Adimsdi`
+    adimsdi : Enum, see `vip_hci.config.paramenum.Adimsdi`
         Changes the way the 4d cubes (ADI+mSDI) are processed. Basically it
         determines whether a single or double pass PCA is going to be computed.
     crop_ifs: bool, optional
@@ -177,26 +264,28 @@ class PCAParams:
         rescaling in wavelength. This is recommended for large FOVs such as the
         one of SPHERE, but can remove significant amount of information close to
         the edge of small FOVs (e.g. SINFONI).
-    imlib : LowerCaseStrEnum, see `vip_hci.var.paramenum.Imlib`
+    imlib : Enum, see `vip_hci.config.paramenum.Imlib`
         See the documentation of ``vip_hci.preproc.frame_rotate``.
-    imlib2 : LowerCaseStrEnum, see `vip_hci.var.paramenum.Imlib`
+    imlib2 : Enum, see `vip_hci.config.paramenum.Imlib`
         See the documentation of ``vip_hci.preproc.cube_rescaling_wavelengths``.
-    interpolation : LowerCaseStrEnum, see `vip_hci.var.paramenum.Interpolation`
+    interpolation : Enum, see `vip_hci.config.paramenum.Interpolation`
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
-    collapse : LowerCaseStrEnum, see `vip_hci.var.paramenum.Collapse`
+    collapse : Enum, see `vip_hci.config.paramenum.Collapse`
         Sets how temporal residual frames should be combined to produce an
         ADI image.
-    collapse_ifs : LowerCaseStrEnum, see `vip_hci.var.paramenum.Collapse`
+    collapse_ifs : Enum, see `vip_hci.config.paramenum.Collapse`
         Sets how spectral residual frames should be combined to produce an
         mSDI image.
     ifs_collapse_range: str 'all' or tuple of 2 int
         If a tuple, it should contain the first and last channels where the mSDI
         residual channels will be collapsed (by default collapses all channels).
-    mask_rdi: 2d numpy array, opt
-        If provided, this binary mask will be used either in RDI mode or in
-        ADI+mSDI (2 steps) mode. The projection coefficients for the principal
-        components will be found considering the area covered by the mask
-        (useful to avoid self-subtraction in presence of bright disc signal)
+    mask_rdi: tuple of two numpy array or one signle 2d numpy array, opt
+        If provided, binary mask(s) will be used either in RDI mode or in
+        ADI+mSDI (2 steps) mode. They will be used as anchor and boat masks
+        following the procedure described in [REN23], which is useful to avoid
+        self-subtraction in the presence of a bright disc signal. If only one
+        mask is provided, the boat images will be unmasked
+        (i.e., full frames will be used).
     check_memory : bool, optional
         If True, it checks that the input cube is smaller than the available
         system memory.
@@ -220,81 +309,22 @@ class PCAParams:
     left_eigv : bool, optional
         Whether to use rather left or right singularvectors
         This mode is not compatible with 'mask_rdi' and 'batch'
+    min_frames_pca : int, optional
+        Minimum number of frames required in the PCA library. An error is raised
+        if less than such number of frames can be found.
     cube_sig: numpy ndarray, opt
         Cube with estimate of significant authentic signals. If provided, this
-        will subtracted before projecting cube onto reference cube.
-    """
-
-    cube: np.ndarray = None
-    angle_list: np.ndarray = None
-    cube_ref: np.ndarray = None
-    scale_list: np.ndarray = None
-    ncomp: Union[Tuple, float, int] = 1
-    svd_mode: LowEnum = SvdMode.LAPACK
-    scaling: LowEnum = None
-    mask_center_px: int = None
-    source_xy: Tuple[int] = None
-    delta_rot: int = None
-    fwhm: float = 4
-    adimsdi: LowEnum = Adimsdi.SINGLE
-    crop_ifs: bool = True
-    imlib: LowEnum = Imlib.VIPFFT
-    imlib2: LowEnum = Imlib.VIPFFT
-    interpolation: LowEnum = Interpolation.LANCZOS4
-    collapse: LowEnum = Collapse.MEDIAN
-    collapse_ifs: LowEnum = Collapse.MEAN
-    ifs_collapse_range: Union[str, Tuple[int]] = "all"
-    mask_rdi: np.ndarray = None
-    check_memory: bool = True
-    batch: Union[int, float] = None
-    nproc: int = 1
-    full_output: bool = False
-    verbose: bool = True
-    weights: np.ndarray = None
-    left_eigv: bool = False
-    cube_sig: np.ndarray = None
-
-
-def pca(
-    algo_params: PCAParams = None,
-    **all_kwargs: dict,
-):
-    """Full-frame PCA algorithm applied to PSF substraction.
-
-    The reference PSF and the quasi-static speckle pattern are modeled using Principal
-    Component Analysis. Depending on the input parameters this PCA function can work in
-    ADI, RDI or mSDI (IFS data) mode.
-
-    ADI: the target ``cube`` itself is used to learn the PCs and to obtain a
-    low-rank approximation model PSF (star + speckles). Both `cube_ref`` and
-    ``scale_list`` must be None. The full-frame ADI-PCA implementation is based
-    on [AMA12]_ and [SOU12]_. If ``batch`` is provided then the cube is processed
-    with incremental PCA as described in [GOM17]_.
-
-    (ADI+)RDI: if a reference cube is provided (``cube_ref``), its PCs are used
-    to reconstruct the target frames to obtain the model PSF (star + speckles).
-
-    (ADI+)mSDI (IFS data): if a scaling vector is provided (``scale_list``) and
-    the cube is a 4d array [# channels, # adi-frames, Y, X], it's assumed it
-    contains several multi-spectral frames acquired in pupil-stabilized mode.
-    A single or two stages PCA can be performed, depending on ``adimsdi``, as
-    explained in [CHR19]_.
-
-    Parameters
-    ----------
-    algo_params: PCAParams
-        Dataclass retaining all the needed parameters for PCA.
-    all_kwargs: dictionary, optional
-        Mix of the parameters that can initialize an algo_params and the optional
-        'rot_options' dictionnary, with keyword values for "border_mode", "mask_val",
-        "edge_blend", "interp_zeros", "ker" (see documentation of
-        ``vip_hci.preproc.frame_rotate``)
+        will be subtracted before projecting considering the science cube as
+        reference cube.
 
     Return
     -------
+    final_residuals_cube : List of numpy ndarray
+        [(ncomp is tuple or list) & (source_xy=None or full_output=True)] List
+        of residual final PCA frames obtained for a grid of PC values.
     frame : numpy ndarray
-        2D array, median combination of the de-rotated/re-scaled residuals cube.
-        Always returned.
+        [ncomp is scalar or source_xy!=None] 2D array, median combination of the
+        de-rotated/re-scaled residuals cube.
     pcs : numpy ndarray
         [full_output=True, source_xy=None] Principal components. Valid for
         ADI cubes 3D or 4D (i.e. ``scale_list=None``). This is also returned
@@ -325,17 +355,31 @@ def pca(
     medians : numpy ndarray
         [full_output=True, source_xy=None] This is also returned when ``batch``
         is not None (incremental PCA).
-    final_residuals_cube : numpy ndarray
-        [ncomp is tuple] The residual final PCA frames for a grid a PCs.
-
+    ifs_adi_frames : numpy ndarray
+        [full_output=True, 4D input cube, ``scale_list=None``] This is the cube
+        of individual ADI reductions for each channel of the IFS cube.
 
     """
-    # Separating the parameters of the ParamsObject from the optionnal rot_options
+    # Separating the parameters of the ParamsObject from optional rot_options
+
     class_params, rot_options = separate_kwargs_dict(
-        initial_kwargs=all_kwargs, parent_class=PCAParams
+        initial_kwargs=all_kwargs, parent_class=PCA_Params
     )
+
+    # Extracting the object of parameters (if any)
+    algo_params = None
+    if ALGO_KEY in rot_options.keys():
+        algo_params = rot_options[ALGO_KEY]
+        del rot_options[ALGO_KEY]
+
     if algo_params is None:
-        algo_params = PCAParams(**class_params)
+        algo_params = PCA_Params(*all_args, **class_params)
+
+    # by default, interpolate masked area before derotation if a mask is used
+    if algo_params.mask_center_px and len(rot_options) == 0:
+        rot_options['mask_val'] = 0
+        rot_options['ker'] = 1
+        rot_options['interp_zeros'] = True
 
     start_time = time_ini(algo_params.verbose)
 
@@ -379,7 +423,7 @@ def pca(
         )
 
     if algo_params.nproc is None:
-        algo_params.nproc = cpu_count() // 2  # Hyper-threading doubles the # of cores
+        algo_params.nproc = cpu_count() // 2  # Hyper-threading doubles # cores
 
     # All possible outputs for any PCA usage must be pre-declared to None
     # Default possible outputs
@@ -430,9 +474,12 @@ def pca(
             )
             if isinstance(algo_params.ncomp, (int, float)):
                 cube_allfr_residuals, cube_adi_residuals, frame = res_pca
-            elif isinstance(algo_params.ncomp, tuple):
+            elif isinstance(algo_params.ncomp, (tuple, list)):
                 if algo_params.source_xy is None:
-                    final_residuals_cube, pclist = res_pca
+                    if algo_params.full_output:
+                        final_residuals_cube, pclist = res_pca
+                    else:
+                        final_residuals_cube = res_pca
                 else:
                     final_residuals_cube, frame, table, _ = res_pca
         else:
@@ -443,12 +490,13 @@ def pca(
         nch, nz, ny, nx = algo_params.cube.shape
         ifs_adi_frames = np.zeros([nch, ny, nx])
         if not isinstance(algo_params.ncomp, list):
-            algo_params.ncomp = [algo_params.ncomp] * nch
-        elif isinstance(algo_params.ncomp, list) and len(algo_params.ncomp) != nch:
-            msg = "If ncomp is a list, in the case of a 4d input cube without "
-            msg += "input scale_list, it should have the same length as the "
-            msg += "first dimension of the cube."
-            raise TypeError()
+            ncomp = [algo_params.ncomp] * nch
+        elif len(algo_params.ncomp) != nch:
+            nnpc = len(algo_params.ncomp)
+            ifs_adi_frames = np.zeros([nch, nnpc, ny, nx])
+            ncomp = [algo_params.ncomp] * nch
+        else:
+            ncomp = algo_params.ncomp
         if np.isscalar(algo_params.fwhm):
             algo_params.fwhm = [algo_params.fwhm] * nch
 
@@ -468,7 +516,7 @@ def pca(
                     "start_time": start_time,
                     "cube": algo_params.cube[ch],
                     "cube_ref": algo_params.cube_ref[ch],
-                    "ncomp": algo_params.ncomp[ch],
+                    "ncomp": ncomp[ch],
                 }
                 func_params = setup_parameters(
                     params_obj=algo_params, fkt=_adi_rdi_pca, **add_params
@@ -495,20 +543,22 @@ def pca(
                 add_params = {
                     "start_time": start_time,
                     "cube": algo_params.cube[ch],
-                    "ncomp": algo_params.ncomp[ch],
+                    "ncomp": ncomp[ch],  # algo_params.ncomp[ch],
                     "fwhm": algo_params.fwhm[ch],
+                    "full_output": True,
                 }
                 func_params = setup_parameters(
-                    params_obj=algo_params, fkt=_adi_pca, **add_params
+                    params_obj=algo_params, fkt=_adi_rdi_pca, **add_params
                 )
-                res_pca = _adi_pca(
+                res_pca = _adi_rdi_pca(
                     **func_params,
                     **rot_options,
                 )
+                grid_case = False
                 if algo_params.batch is None:
                     if algo_params.source_xy is not None:
                         # PCA grid, computing S/Ns
-                        if isinstance(algo_params.ncomp[ch], tuple):
+                        if isinstance(ncomp[ch], (tuple, list)):
                             final_residuals_cube.append(res_pca[0])
                             ifs_adi_frames[ch] = res_pca[1]
                             table.append(res_pca[2])
@@ -520,9 +570,10 @@ def pca(
                             ifs_adi_frames[ch] = res_pca[-1]
                     else:
                         # PCA grid
-                        if isinstance(algo_params.ncomp[ch], tuple):
-                            final_residuals_cube.append(res_pca[0])
+                        if isinstance(ncomp[ch], (tuple, list)):
+                            ifs_adi_frames[ch] = res_pca[0]
                             pclist.append(res_pca[1])
+                            grid_case = True
                         # full-frame standard PCA
                         else:
                             pcs.append(res_pca[0])
@@ -536,7 +587,14 @@ def pca(
                     pcs.append(res_pca[2])
                     medians.append(res_pca[3])
 
-            frame = cube_collapse(ifs_adi_frames, mode=algo_params.collapse_ifs)
+            if grid_case:
+                for i in range(len(ncomp[0])):
+                    frame = [cube_collapse(ifs_adi_frames[:, i],
+                                           mode=algo_params.collapse_ifs)]
+                    final_residuals_cube = frame
+            else:
+                frame = cube_collapse(ifs_adi_frames,
+                                      mode=algo_params.collapse_ifs)
 
         # convert to numpy arrays when relevant
         if len(pcs) > 0:
@@ -555,38 +613,39 @@ def pca(
             medians = np.array(medians)
 
     # ADI + RDI
-    elif algo_params.cube_ref is not None:
-        add_params = {
-            "start_time": start_time,
-        }
-        func_params = setup_parameters(
-            params_obj=algo_params, fkt=_adi_rdi_pca, **add_params
-        )
-        res_pca = _adi_rdi_pca(
-            **func_params,
-            **rot_options,
-        )
-        pcs, recon, residuals_cube, residuals_cube_, frame = res_pca
+    # elif algo_params.cube_ref is not None:
+    #     add_params = {
+    #         "start_time": start_time,
+    #         "full_output": True,
+    #     }
+    #     func_params = setup_parameters(
+    #         params_obj=algo_params, fkt=_adi_rdi_pca, **add_params
+    #     )
+    #     res_pca = _adi_rdi_pca(
+    #         **func_params,
+    #         **rot_options,
+    #     )
+    #     pcs, recon, residuals_cube, residuals_cube_, frame = res_pca
 
-    # ADI. Shape of cube: (n_adi_frames, y, x)
-    elif algo_params.cube_ref is None:
+    # ADI+RDI OR ADI. Shape of cube: (n_adi_frames, y, x)
+    else:
         add_params = {
             "start_time": start_time,
             "full_output": True,
         }
-        func_params = setup_parameters(
-            params_obj=algo_params, fkt=_adi_pca, **add_params
-        )
 
-        res_pca = _adi_pca(
-            **func_params,
-            **rot_options,
-        )
+        func_params = setup_parameters(params_obj=algo_params,
+                                       fkt=_adi_rdi_pca, **add_params)
+
+        if algo_params.cube_ref is not None and algo_params.batch is not None:
+            raise ValueError("RDI not compatible with batch mode")
+
+        res_pca = _adi_rdi_pca(**func_params, **rot_options)
 
         if algo_params.batch is None:
             if algo_params.source_xy is not None:
                 # PCA grid, computing S/Ns
-                if isinstance(algo_params.ncomp, tuple):
+                if isinstance(algo_params.ncomp, (tuple, list)):
                     if algo_params.full_output:
                         final_residuals_cube, frame, table, _ = res_pca
                     else:
@@ -597,7 +656,7 @@ def pca(
                     recon_cube, residuals_cube, residuals_cube_, frame = res_pca
             else:
                 # PCA grid
-                if isinstance(algo_params.ncomp, tuple):
+                if isinstance(algo_params.ncomp, (tuple, list)):
                     final_residuals_cube, pclist = res_pca
                 # full-frame standard PCA
                 else:
@@ -606,16 +665,17 @@ def pca(
         else:
             frame, _, pcs, medians = res_pca
 
-    else:
-        raise RuntimeError(
-            "Only ADI, ADI+RDI and ADI+mSDI observing techniques are supported"
-        )
+    # else:
+    #     raise RuntimeError(
+    #        "Only ADI, ADI+RDI and ADI+mSDI observing techniques are supported"
+    #     )
 
     # --------------------------------------------------------------------------
     # Returns for each case (ADI, ADI+RDI and ADI+mSDI) and combination of
     # parameters: full_output, source_xy, batch, ncomp
     # --------------------------------------------------------------------------
-    if isinstance(algo_params.cube, np.ndarray) and algo_params.scale_list is not None:
+    isarr = isinstance(algo_params.cube, np.ndarray)
+    if isarr and algo_params.scale_list is not None:
         # ADI+mSDI double-pass PCA
         if algo_params.adimsdi == Adimsdi.DOUBLE:
             if algo_params.full_output:
@@ -631,73 +691,68 @@ def pca(
                 else:
                     return frame
             # ADI+mSDI single-pass PCA grid
-            elif isinstance(algo_params.ncomp, tuple):
+            elif isinstance(algo_params.ncomp, (tuple, list)):
                 if algo_params.source_xy is None:
-                    return (
-                        final_residuals_cube,
-                        pclist if algo_params.full_output else final_residuals_cube,
-                    )
+                    if algo_params.full_output:
+                        return final_residuals_cube, pclist
+                    else:
+                        return final_residuals_cube
                 else:
-                    return (
-                        final_residuals_cube,
-                        frame,
-                        table if algo_params.full_output else frame,
-                    )
+                    if algo_params.full_output:
+                        return final_residuals_cube, frame, table
+                    else:
+                        return frame
             else:
-                raise ValueError(
-                    "ncomp value should only be a float, an int or a tuple of those,"
-                    f"not a {type(algo_params.ncomp)}."
-                )
+                msg = "ncomp value should only be a float, an int or a tuple of"
+                msg += f" those, not a {type(algo_params.ncomp)}."
+                raise ValueError(msg)
         else:
-            raise ValueError(
-                f"ADIMSDI value should only be {Adimsdi.SINGLE} or {Adimsdi.DOUBLE}."
-            )
+            msg = f"ADIMSDI value should only be {Adimsdi.SINGLE} or"
+            msg += f" {Adimsdi.DOUBLE}."
+            raise ValueError(msg)
 
     # ADI and ADI+RDI (3D or 4D)
     elif isinstance(algo_params.cube, str) or algo_params.scale_list is None:
-        if (
-            algo_params.cube_ref is not None or algo_params.source_xy is None
-        ) and algo_params.full_output:
+        if algo_params.source_xy is None and algo_params.full_output:
             # incremental PCA
             if algo_params.batch is not None:
                 final_res = [frame, pcs, medians]
             else:
                 # PCA grid
-                if isinstance(algo_params.ncomp, tuple):
+                if isinstance(algo_params.ncomp, (tuple, list)):
                     final_res = [final_residuals_cube, pclist]
                 # full-frame standard PCA or ADI+RDI
                 else:
-                    final_res = [frame, pcs, recon,
-                                 residuals_cube, residuals_cube_]
+                    final_res = [frame, pcs, recon, residuals_cube,
+                                 residuals_cube_]
             if algo_params.cube.ndim == 4:
                 final_res.append(ifs_adi_frames)
             return tuple(final_res)
         elif algo_params.source_xy is not None and algo_params.full_output:
             # PCA grid, computing S/Ns
-            if isinstance(algo_params.ncomp, tuple):
+            if isinstance(algo_params.ncomp, (tuple, list)):
                 final_res = [final_residuals_cube, frame, table]
             # full-frame PCA with rotation threshold
             else:
                 final_res = [frame, recon_cube, residuals_cube, residuals_cube_]
-            if algo_params.cube.ndim == 4:
-                final_res.append(ifs_adi_frames)
             return tuple(final_res)
         elif not algo_params.full_output:
             # PCA grid
-            if isinstance(algo_params.ncomp, tuple):
+            if isinstance(algo_params.ncomp, (tuple, list)):
                 return final_residuals_cube
             # full-frame standard PCA or ADI+RDI
             else:
                 return frame
 
     else:
-        raise ValueError(
-            f"cube value should only be a str or a numpy.ndarray, not a {type(algo_params.cube)}."
-        )
+        msg = "cube value should only be a str or a numpy.ndarray, not a "
+        msg += f"{type(algo_params.cube)}."
+        raise ValueError(msg)
 
 
-def _adi_pca(
+def _adi_rdi_pca(
     cube,
+    cube_ref,
     angle_list,
     ncomp,
     batch,
@@ -715,11 +770,13 @@ def _adi_pca(
     nproc,
     full_output,
     weights=None,
+    mask_rdi=None,
     cube_sig=None,
     left_eigv=False,
+    min_frames_pca=10,
     **rot_options,
 ):
-    """Handle the ADI PCA post-processing."""
+    """Handle the ADI or ADI+RDI PCA post-processing."""
     (
         frame,
         pcs,
@@ -757,10 +814,9 @@ def _adi_pca(
                 "equal the number of frames in the cube"
             )
 
-        if not isinstance(ncomp, (int, float, tuple)):
-            raise TypeError(
-                "`ncomp` must be an int, float or a tuple in the " "ADI case"
-            )
+        if not isinstance(ncomp, (int, float, tuple, list)):
+            msg = "`ncomp` must be an int, float, tuple or list in the ADI case"
+            raise TypeError(msg)
 
         if np.isscalar(ncomp):
             if isinstance(ncomp, int) and ncomp > n:
@@ -769,91 +825,87 @@ def _adi_pca(
                     "Number of PCs too high (max PCs={}), using {} PCs "
                     "instead.".format(n, ncomp)
                 )
-
-            if source_xy is None:
-                residuals_result = _project_subtract(
-                    cube,
-                    None,
-                    ncomp,
-                    scaling,
-                    mask_center_px,
-                    svd_mode,
-                    verbose,
-                    full_output,
-                    cube_sig=cube_sig,
-                    left_eigv=left_eigv,
-                )
-                if verbose:
-                    timing(start_time)
-                if full_output:
-                    residuals_cube = residuals_result[0]
-                    reconstructed = residuals_result[1]
-                    V = residuals_result[2]
-                    pcs = reshape_matrix(V, y, x) if not left_eigv else V.T
-                    recon = reshape_matrix(reconstructed, y, x)
-                else:
-                    residuals_cube = residuals_result
-
-            # A rotation threshold is applied
-            else:
-                if delta_rot is None or fwhm is None:
-                    msg = "Delta_rot or fwhm parameters missing. Needed for the"
-                    msg += "PA-based rejection of frames from the library"
-                    raise TypeError(msg)
-                nfrslib = []
-                residuals_cube = np.zeros_like(cube)
-                recon_cube = np.zeros_like(cube)
-                yc, xc = frame_center(cube[0], False)
-                x1, y1 = source_xy
-                ann_center = dist(yc, xc, y1, x1)
-                pa_thr = _compute_pa_thresh(ann_center, fwhm, delta_rot)
-                mid_range = np.abs(np.amax(angle_list) -
-                                   np.amin(angle_list)) / 2
-                if pa_thr >= mid_range - mid_range * 0.1:
-                    new_pa_th = float(mid_range - mid_range * 0.1)
-                    if verbose:
-                        msg = "PA threshold {:.2f} is too big, will be set to "
-                        msg += "{:.2f}"
-                        print(msg.format(pa_thr, new_pa_th))
-                    pa_thr = new_pa_th
-
-                for frame in range(n):
-                    if ann_center > fwhm * 3:  # TODO: 3 optimal value? new par?
-                        ind = _find_indices_adi(
-                            angle_list, frame, pa_thr, truncate=True
-                        )
-                    else:
-                        ind = _find_indices_adi(angle_list, frame, pa_thr)
-
-                    res_result = _project_subtract(
+            if mask_rdi is None:
+                if source_xy is None:
+                    residuals_result = _project_subtract(
                         cube,
-                        None,
+                        cube_ref,
                         ncomp,
                         scaling,
                         mask_center_px,
                         svd_mode,
                         verbose,
                         full_output,
-                        ind,
-                        frame,
                         cube_sig=cube_sig,
                         left_eigv=left_eigv,
                     )
+                    if verbose:
+                        timing(start_time)
                     if full_output:
-                        nfrslib.append(res_result[0])
-                        residual_frame = res_result[1]
-                        recon_frame = res_result[2]
-                        residuals_cube[frame] = residual_frame.reshape((y, x))
-                        recon_cube[frame] = recon_frame.reshape((y, x))
+                        residuals_cube = residuals_result[0]
+                        reconstructed = residuals_result[1]
+                        V = residuals_result[2]
+                        pcs = reshape_matrix(V, y, x) if not left_eigv else V.T
+                        recon = reshape_matrix(reconstructed, y, x)
                     else:
-                        nfrslib.append(res_result[0])
-                        residual_frame = res_result[1]
-                        residuals_cube[frame] = residual_frame.reshape((y, x))
+                        residuals_cube = residuals_result
 
-                # number of frames in library printed for each annular quadrant
-                if verbose:
-                    descriptive_stats(nfrslib, verbose=verbose,
-                                      label="Size LIB: ")
+                # A rotation threshold is applied
+                else:
+                    if delta_rot is None or fwhm is None:
+                        msg = "Delta_rot or fwhm parameters missing. Needed for"
+                        msg += "PA-based rejection of frames from the library"
+                        raise TypeError(msg)
+                    nfrslib = []
+                    residuals_cube = np.zeros_like(cube)
+                    recon_cube = np.zeros_like(cube)
+                    yc, xc = frame_center(cube[0], False)
+                    x1, y1 = source_xy
+                    ann_center = dist(yc, xc, y1, x1)
+                    pa_thr = _compute_pa_thresh(ann_center, fwhm, delta_rot)
+
+                    for frame in range(n):
+                        ind = _find_indices_adi(angle_list, frame, pa_thr)
+
+                        res_result = _project_subtract(
+                            cube,
+                            cube_ref,
+                            ncomp,
+                            scaling,
+                            mask_center_px,
+                            svd_mode,
+                            verbose,
+                            full_output,
+                            ind,
+                            frame,
+                            cube_sig=cube_sig,
+                            left_eigv=left_eigv,
+                            min_frames_pca=min_frames_pca,
+                        )
+                        if full_output:
+                            nfrslib.append(res_result[0])
+                            residual_frame = res_result[1]
+                            recon_frame = res_result[2]
+                            residuals_cube[frame] = residual_frame.reshape((y,
+                                                                            x))
+                            recon_cube[frame] = recon_frame.reshape((y, x))
+                        else:
+                            nfrslib.append(res_result[0])
+                            residual_frame = res_result[1]
+                            residuals_cube[frame] = residual_frame.reshape((y,
+                                                                            x))
+
+                    # number of frames in library printed for each ann. quadrant
+                    if verbose:
+                        descriptive_stats(nfrslib, verbose=verbose,
+                                          label="Size LIB: ")
+            else:
+                residuals_result = cube_subtract_sky_pca(
+                    cube, cube_ref, mask_rdi, ncomp=ncomp, full_output=True
+                )
+                residuals_cube = residuals_result[0]
+                pcs = residuals_result[2]
+                recon = residuals_result[-1]
 
             residuals_cube_ = cube_derotate(
                 residuals_cube,
@@ -870,20 +922,22 @@ def _adi_pca(
                 print("Done de-rotating and combining")
                 timing(start_time)
             if source_xy is not None:
-                return (
-                    recon_cube,
-                    residuals_cube,
-                    residuals_cube_,
-                    frame if full_output else frame,
-                )
+                if full_output:
+                    return (recon_cube,
+                            residuals_cube,
+                            residuals_cube_,
+                            frame)
+                else:
+                    return frame
             else:
-                return (
-                    pcs,
-                    recon,
-                    residuals_cube,
-                    residuals_cube_,
-                    frame if full_output else frame,
-                )
+                if full_output:
+                    return (pcs,
+                            recon,
+                            residuals_cube,
+                            residuals_cube_,
+                            frame)
+                else:
+                    return frame
 
         # When ncomp is a tuple, pca_grid is called
         else:
@@ -893,7 +947,7 @@ def _adi_pca(
                 fwhm,
                 range_pcs=ncomp,
                 source_xy=source_xy,
-                cube_ref=None,
+                cube_ref=cube_ref,
                 mode="fullfr",
                 svd_mode=svd_mode,
                 scaling=scaling,
@@ -938,6 +992,7 @@ def _adimsdi_singlepca(
     full_output,
     weights=None,
     left_eigv=False,
+    min_frames_pca=10,
     **rot_options,
 ):
     """Handle the full-frame ADI+mSDI single PCA post-processing."""
@@ -962,9 +1017,8 @@ def _adimsdi_singlepca(
     if verbose:
         print("Rescaling the spectral channels to align the speckles")
     for i in Progressbar(range(n), verbose=verbose):
-        cube_resc = scwave(
-            cube[:, i, :, :], scale_list, imlib=imlib2, interpolation=interpolation
-        )[0]
+        cube_resc = scwave(cube[:, i, :, :], scale_list, imlib=imlib2,
+                           interpolation=interpolation)[0]
         if crop_ifs:
             cube_resc = cube_crop_frames(cube_resc, size=y_in, verbose=False)
         big_cube.append(cube_resc)
@@ -1007,6 +1061,7 @@ def _adimsdi_singlepca(
                 verbose,
                 False,
                 left_eigv=left_eigv,
+                min_frames_pca=min_frames_pca,
             )
 
         if verbose:
@@ -1025,7 +1080,7 @@ def _adimsdi_singlepca(
 
         for i in Progressbar(range(n), verbose=verbose):
             frame_i = scwave(
-                res_cube[i * z + idx_ini: i * z + idx_fin],
+                res_cube[i * z + idx_ini:i * z + idx_fin],
                 scale_list[idx_ini:idx_fin],
                 full_output=False,
                 inverse=True,
@@ -1056,7 +1111,7 @@ def _adimsdi_singlepca(
         return cube_allfr_residuals, cube_adi_residuals, frame
 
     # When ncomp is a tuple, pca_grid is called
-    elif isinstance(ncomp, tuple):
+    elif isinstance(ncomp, (tuple, list)):
         gridre = pca_grid(
             big_cube,
             angle_list,
@@ -1088,7 +1143,7 @@ def _adimsdi_singlepca(
 
     else:
         raise TypeError(
-            "`ncomp` must be an int, float or a tuple for " "single-pass PCA"
+            "`ncomp` must be an int, float, tuple or list for single-pass PCA"
         )
 
 
@@ -1193,17 +1248,15 @@ def _adimsdi_doublepca(
             interpolation=interpolation,
             **rot_options,
         )
-        frame = cube_collapse(residuals_cube_channels_,
-                              mode=collapse, w=weights)
+        frame = cube_collapse(residuals_cube_channels_, mode=collapse,
+                              w=weights)
         if verbose:
             timing(start_time)
     else:
         if ncomp_adi > n:
             ncomp_adi = n
-            print(
-                "Number of PCs too high, using  maximum of {} PCs " "instead".format(
-                    n)
-            )
+            msg = "Number of PCs too high, using  maximum of {} PCs instead"
+            print(msg.format(n))
         if verbose:
             print("{} ADI frames".format(n))
             print("Second PCA stage exploiting rotational variability")
@@ -1231,8 +1284,8 @@ def _adimsdi_doublepca(
             **rot_options,
         )
         residuals_cube_channels_ = der_res
-        frame = cube_collapse(residuals_cube_channels_,
-                              mode=collapse, w=weights)
+        frame = cube_collapse(residuals_cube_channels_, mode=collapse,
+                              w=weights)
         if verbose:
             timing(start_time)
     return residuals_cube_channels, residuals_cube_channels_, frame
@@ -1316,88 +1369,154 @@ def _adimsdi_doublepca_ifs(
     return frame_i
 
 
-def _adi_rdi_pca(
-    cube,
-    cube_ref,
-    angle_list,
-    ncomp,
-    scaling,
-    mask_center_px,
-    svd_mode,
-    imlib,
-    interpolation,
-    collapse,
-    verbose,
-    start_time,
-    nproc,
-    weights=None,
-    mask_rdi=None,
-    cube_sig=None,
-    **rot_options,
-):
-    """Handle the ADI+RDI post-processing."""
-    n, y, x = cube.shape
-    n_ref, y_ref, x_ref = cube_ref.shape
-    angle_list = check_pa_vector(angle_list)
-    if not isinstance(ncomp, int):
-        raise TypeError("`ncomp` must be an int in the ADI+RDI case")
-    if ncomp > n_ref:
-        msg = (
-            "Requested number of PCs ({}) higher than the number of frames "
-            + "in the reference cube ({}); using the latter instead."
-        )
-        print(msg.format(ncomp, n_ref))
-        ncomp = n_ref
+# def _adi_rdi_pca(
+#     cube,
+#     cube_ref,
+#     angle_list,
+#     ncomp,
+#     source_xy,
+#     delta_rot,
+#     fwhm,
+#     scaling,
+#     mask_center_px,
+#     svd_mode,
+#     imlib,
+#     interpolation,
+#     collapse,
+#     verbose,
+#     start_time,
+#     nproc,
+#     weights=None,
+#     mask_rdi=None,
+#     cube_sig=None,
+#     left_eigv=False,
+#     **rot_options,
+# ):
+#     """Handle the ADI+RDI post-processing."""
+#     n, y, x = cube.shape
+#     n_ref, y_ref, x_ref = cube_ref.shape
+#     angle_list = check_pa_vector(angle_list)
+#     if not isinstance(ncomp, int):
+#         raise TypeError("`ncomp` must be an int in the ADI+RDI case")
+#     if ncomp > n_ref:
+#         msg = (
+#             "Requested number of PCs ({}) higher than the number of frames "
+#             + "in the reference cube ({}); using the latter instead."
+#         )
+#         print(msg.format(ncomp, n_ref))
+#         ncomp = n_ref
 
-    if not cube_ref.ndim == 3:
-        msg = "Input reference array is not a cube or 3d array"
-        raise ValueError(msg)
-    if not y_ref == y and x_ref == x:
-        msg = "Reference and target frames have different shape"
-        raise TypeError(msg)
+#     if not cube_ref.ndim == 3:
+#         msg = "Input reference array is not a cube or 3d array"
+#         raise ValueError(msg)
+#     if not y_ref == y and x_ref == x:
+#         msg = "Reference and target frames have different shape"
+#         raise TypeError(msg)
 
-    if mask_rdi is None:
-        residuals_result = _project_subtract(
-            cube,
-            cube_ref,
-            ncomp,
-            scaling,
-            mask_center_px,
-            svd_mode,
-            verbose,
-            True,
-            cube_sig=cube_sig,
-        )
-        residuals_cube = residuals_result[0]
-        reconstructed = residuals_result[1]
-        V = residuals_result[2]
-        pcs = reshape_matrix(V, y, x)
-        recon = reshape_matrix(reconstructed, y, x)
-    else:
-        residuals_result = cube_subtract_sky_pca(
-            cube, cube_ref, mask_rdi, ncomp=ncomp, full_output=True
-        )
-        residuals_cube = residuals_result[0]
-        pcs = residuals_result[2]
-        recon = residuals_result[-1]
+#     if mask_rdi is None:
+#         if source_xy is None:
+#             residuals_result = _project_subtract(
+#                 cube,
+#                 cube_ref,
+#                 ncomp,
+#                 scaling,
+#                 mask_center_px,
+#                 svd_mode,
+#                 verbose,
+#                 True,
+#                 cube_sig=cube_sig,
+#                 left_eigv=left_eigv,
+#             )
+#             residuals_cube = residuals_result[0]
+#             reconstructed = residuals_result[1]
+#             V = residuals_result[2]
+#             pcs = reshape_matrix(V, y, x) if not left_eigv else V.T
+#             recon = reshape_matrix(reconstructed, y, x)
+#         # A rotation threshold is applied
+#         else:
+#             if delta_rot is None or fwhm is None:
+#                 msg = "Delta_rot or fwhm parameters missing. Needed for the"
+#                 msg += "PA-based rejection of frames from the library"
+#                 raise TypeError(msg)
+#             nfrslib = []
+#             residuals_cube = np.zeros_like(cube)
+#             recon_cube = np.zeros_like(cube)
+#             yc, xc = frame_center(cube[0], False)
+#             x1, y1 = source_xy
+#             ann_center = dist(yc, xc, y1, x1)
+#             pa_thr = _compute_pa_thresh(ann_center, fwhm, delta_rot)
+#             mid_range = np.abs(np.max(angle_list) - np.min(angle_list)) / 2
+#             if pa_thr >= mid_range - mid_range * 0.1:
+#                 new_pa_th = float(mid_range - mid_range * 0.1)
+#                 if verbose:
+#                     msg = "PA threshold {:.2f} is too big, will be set to "
+#                     msg += "{:.2f}"
+#                     print(msg.format(pa_thr, new_pa_th))
+#                 pa_thr = new_pa_th
 
-    residuals_cube_ = cube_derotate(
-        residuals_cube,
-        angle_list,
-        nproc=nproc,
-        imlib=imlib,
-        interpolation=interpolation,
-        **rot_options,
-    )
-    frame = cube_collapse(residuals_cube_, mode=collapse, w=weights)
-    if mask_center_px:
-        frame = mask_circle(frame, mask_center_px)
+#             for frame in range(n):
+#                 if ann_center > fwhm * 3:  # TODO: 3 optimal value? new par?
+#                     ind = _find_indices_adi(
+#                         angle_list, frame, pa_thr, truncate=True
+#                     )
+#                 else:
+#                     ind = _find_indices_adi(angle_list, frame, pa_thr)
 
-    if verbose:
-        print("Done de-rotating and combining")
-        timing(start_time)
+#                 res_result = _project_subtract(
+#                     cube,
+#                     cube_ref,
+#                     ncomp,
+#                     scaling,
+#                     mask_center_px,
+#                     svd_mode,
+#                     verbose,
+#                     full_output,
+#                     ind,
+#                     frame,
+#                     cube_sig=cube_sig,
+#                     left_eigv=left_eigv,
+#                     min_frames_pca=min_frames_pca,
+#                 )
+#                 if full_output:
+#                     nfrslib.append(res_result[0])
+#                     residual_frame = res_result[1]
+#                     recon_frame = res_result[2]
+#                     residuals_cube[frame] = residual_frame.reshape((y, x))
+#                     recon_cube[frame] = recon_frame.reshape((y, x))
+#                 else:
+#                     nfrslib.append(res_result[0])
+#                     residual_frame = res_result[1]
+#                     residuals_cube[frame] = residual_frame.reshape((y, x))
 
-    return pcs, recon, residuals_cube, residuals_cube_, frame
+#             # number of frames in library printed for each annular quadrant
+#             if verbose:
+#                 descriptive_stats(nfrslib, verbose=verbose,
+#                                   label="Size LIB: ")
+#     else:
+#         residuals_result = cube_subtract_sky_pca(
+#             cube, cube_ref, mask_rdi, ncomp=ncomp, full_output=True
+#         )
+#         residuals_cube = residuals_result[0]
+#         pcs = residuals_result[2]
+#         recon = residuals_result[-1]
+
+#     residuals_cube_ = cube_derotate(
+#         residuals_cube,
+#         angle_list,
+#         nproc=nproc,
+#         imlib=imlib,
+#         interpolation=interpolation,
+#         **rot_options,
+#     )
+#     frame = cube_collapse(residuals_cube_, mode=collapse, w=weights)
+#     if mask_center_px:
+#         frame = mask_circle(frame, mask_center_px)
+
+#     if verbose:
+#         print("Done de-rotating and combining")
+#         timing(start_time)
+
+#     return pcs, recon, residuals_cube, residuals_cube_, frame
 
 
 def _project_subtract(
@@ -1413,6 +1532,7 @@ def _project_subtract(
     frame=None,
     cube_sig=None,
     left_eigv=False,
+    min_frames_pca=10,
 ):
     """
     PCA projection and model PSF subtraction.
@@ -1466,14 +1586,14 @@ def _project_subtract(
     """
     _, y, x = cube.shape
     if isinstance(ncomp, (int, np.int_)):
-        # if cube_sig is not None:
-        #     cube_emp = cube-cube_sig
-        # else:
-        #     cube_emp = None
         if indices is not None and frame is not None:
             matrix = prepare_matrix(
                 cube, scaling, mask_center_px, mode="fullfr", verbose=False
             )
+        elif left_eigv:
+            matrix = prepare_matrix(cube, scaling, mask_center_px,
+                                    mode="fullfr", verbose=verbose,
+                                    discard_mask_pix=True)
         else:
             matrix = prepare_matrix(
                 cube, scaling, mask_center_px, mode="fullfr", verbose=verbose
@@ -1481,34 +1601,47 @@ def _project_subtract(
         if cube_sig is None:
             matrix_emp = matrix.copy()
         else:
-            nfr = cube_sig.shape[0]
-            cube_sig = np.reshape(cube_sig, (nfr, -1))
-            matrix_emp = matrix - cube_sig
+            if left_eigv:
+                matrix_sig = prepare_matrix(cube_sig, scaling, mask_center_px,
+                                            mode="fullfr", verbose=verbose,
+                                            discard_mask_pix=True)
+            else:
+                nfr = cube_sig.shape[0]
+                matrix_sig = np.reshape(cube_sig, (nfr, -1))
+            matrix_emp = matrix - matrix_sig
 
         if cube_ref is not None:
-            ref_lib = prepare_matrix(
-                cube_ref, scaling, mask_center_px, mode="fullfr", verbose=verbose
-            )
-        elif left_eigv:
-            ref_lib = prepare_matrix(
-                cube,
-                scaling,
-                mask_center_px,
-                mode="fullfr",
-                verbose=verbose,
-                discard_mask_pix=True,
-            )
-        else:
-            ref_lib = matrix_emp
+            if left_eigv:
+                matrix_ref = prepare_matrix(cube_sig, scaling, mask_center_px,
+                                            mode="fullfr", verbose=verbose,
+                                            discard_mask_pix=True)
+            else:
+                matrix_ref = prepare_matrix(cube_ref, scaling, mask_center_px,
+                                            mode="fullfr", verbose=verbose)
+
+        # check whether indices are well defined (i.e. not empty)
+        msg = "{} frames comply to delta_rot condition < less than "
+        msg1 = msg + "min_frames_pca ({}). Try decreasing delta_rot or "
+        msg1 += "min_frames_pca"
+        msg2 = msg + "ncomp ({}). Try decreasing the parameter delta_rot or "
+        msg2 += "ncomp"
+        if indices is not None and frame is not None:
+            try:
+                ref_lib = matrix_emp[indices]
+            except IndexError:
+                indices = None
+            if cube_ref is None and indices is None:
+                raise RuntimeError(msg1.format(0, min_frames_pca))
 
         # a rotation threshold is used (frames are processed one by one)
         if indices is not None and frame is not None:
-            ref_lib = ref_lib[indices]
-            if ref_lib.shape[0] <= 10:
-                raise RuntimeError(
-                    "Less than 10 frames left in the PCA library"
-                    ", Try decreasing the parameter delta_rot"
-                )
+            if cube_ref is not None:
+                ref_lib = np.concatenate((ref_lib, matrix_ref))
+            if ref_lib.shape[0] < min_frames_pca:
+                raise RuntimeError(msg1.format(ref_lib.shape[0],
+                                               min_frames_pca))
+            if ref_lib.shape[0] < ncomp:
+                raise RuntimeError(msg2.format(ref_lib.shape[0], ncomp))
             curr_frame = matrix[frame]  # current frame
             curr_frame_emp = matrix_emp[frame]
             if left_eigv:
@@ -1530,6 +1663,10 @@ def _project_subtract(
 
         # the whole matrix is processed at once
         else:
+            if cube_ref is not None:
+                ref_lib = matrix_ref
+            else:
+                ref_lib = matrix_emp
             if left_eigv:
                 V = svd_wrapper(ref_lib, svd_mode, ncomp, verbose,
                                 left_eigv=left_eigv)
@@ -1554,9 +1691,8 @@ def _project_subtract(
                 "when `ncomp` is float, it must lie in the " "interval (0,1]"
             )
 
-        svdecomp = SVDecomposer(
-            cube, mode="fullfr", svd_mode=svd_mode, scaling=scaling, verbose=verbose
-        )
+        svdecomp = SVDecomposer(cube, mode="fullfr", svd_mode=svd_mode,
+                                scaling=scaling, verbose=verbose)
         _ = svdecomp.get_cevr(plot=False)
         # in this case ncomp is the desired CEVR
         cevr = ncomp

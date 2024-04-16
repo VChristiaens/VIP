@@ -4,31 +4,80 @@ Module with NMF algorithm in concentric annuli for ADI/RDI.
 """
 
 __author__ = "Valentin Christiaens, Thomas Bédrine"
-__all__ = ["nmf_annular", "NMFAnnParams"]
+__all__ = ["nmf_annular", "NMF_ANNULAR_Params"]
 
 import numpy as np
-import pdb
 from multiprocessing import cpu_count
 from sklearn.decomposition import NMF
 from dataclasses import dataclass, field
 from typing import Tuple, List, Union
-from strenum import LowercaseStrEnum as LowEnum
+from enum import Enum
 from ..preproc import cube_derotate, cube_collapse, check_pa_vector
 from ..preproc.derotation import _find_indices_adi, _define_annuli
 from ..var import get_annulus_segments, matrix_scaling
-from ..var.object_utils import setup_parameters, separate_kwargs_dict
-from ..var.paramenum import Initsvd, Imlib, Interpolation, HandleNeg, Collapse
+from ..config.utils_param import setup_parameters, separate_kwargs_dict
+from ..config.paramenum import Initsvd, Imlib, Interpolation, HandleNeg, Collapse, ALGO_KEY
 from ..config import timing, time_ini
 from ..config.utils_conf import pool_map, iterable
 
 
-# TODO: update the doc of the params (some are missing)
 @dataclass
-class NMFAnnParams:
+class NMF_ANNULAR_Params:
     """
     Set of parameters for the NMF annular algorithm.
 
+    See function `nmf_annular` below for the documentation.
+    """
+
+    cube: np.ndarray = None
+    angle_list: np.ndarray = None
+    cube_ref: np.ndarray = None
+    radius_int: int = 0
+    fwhm: float = 4
+    asize: int = 4
+    n_segments: int = 1
+    delta_rot: Union[float, Tuple[float]] = (0.1, 1)
+    ncomp: int = 1
+    init_svd: Enum = Initsvd.NNDSVD
+    nproc: int = 1
+    min_frames_lib: int = 2
+    max_frames_lib: int = 200
+    scaling: Enum = None
+    imlib: Enum = Imlib.VIPFFT
+    interpolation: Enum = Interpolation.LANCZOS4
+    collapse: Enum = Collapse.MEDIAN
+    full_output: bool = False
+    verbose: bool = True
+    theta_init: float = 0
+    weights: List = None
+    cube_sig: np.ndarray = None
+    handle_neg: Enum = HandleNeg.MASK
+    max_iter: int = 1000
+    random_state: int = None
+    nmf_args: dict = field(default_factory=lambda: {})
+
+
+# TODO: update the doc of the params (some are missing)
+def nmf_annular(*all_args: List, **all_kwargs: dict):
+    """Non Negative Matrix Factorization in concentric annuli, for ADI/RDI
+    sequences. Alternative to the annular ADI-PCA processing that does not rely
+    on SVD or ED for obtaining a low-rank approximation of the datacube.
+    This function embeds the scikit-learn NMF algorithm solved through either
+    the coordinate descent or the multiplicative update method.
+
     Parameters
+    ----------
+    all_args: list, optional
+        Positionnal arguments for the NMF annular algorithm. Full list of parameters
+        below.
+    all_kwargs: dictionary, optional
+        Mix of keyword arguments that can initialize a NMFAnnParams and the optional
+        'rot_options' dictionnary, with keyword values for "border_mode", "mask_val",
+        "edge_blend", "interp_zeros", "ker" (see documentation of
+        ``vip_hci.preproc.frame_rotate``). Can also contain a NMFAnnParams named as
+        `algo_params`..
+
+    NMF annular parameters
     ----------
     cube : numpy ndarray, 3d
         Input cube.
@@ -40,7 +89,7 @@ class NMFAnnParams:
         The radius of the innermost annulus. By default is 0, if >0 then the
         central circular region is discarded.
     fwhm : float, optional
-        Size of the FHWM in pixels. Default is 4.
+        Size of the FWHM in pixels. Default is 4.
     asize : float, optional
         The size of the annuli, in pixels.
     n_segments : int or list of ints or 'auto', optional
@@ -49,7 +98,7 @@ class NMFAnnParams:
         automatically determined for every annulus, based on the annulus width.
     delta_rot : float or tuple of floats, optional
         Factor for adjusting the parallactic angle threshold, expressed in
-        FWHM. Default is 1 (excludes 1 FHWM on each side of the considered
+        FWHM. Default is 1 (excludes 1 FWHM on each side of the considered
         frame). If a tuple of two floats is provided, they are used as the lower
         and upper intervals for the threshold (grows linearly as a function of
         the separation). !!! Important: this is used even if a reference cube
@@ -95,7 +144,7 @@ class NMFAnnParams:
         given (X,Y) coordinates are computed.
     delta_rot : int, optional
         Factor for tunning the parallactic angle threshold, expressed in FWHM.
-        Default is 1 (excludes 1xFHWM on each side of the considered frame).
+        Default is 1 (excludes 1xFWHM on each side of the considered frame).
     init_svd: str, optional {'nnsvd','nnsvda','random'}
         Method used to initialize the iterative procedure to find H and W.
         'nndsvd': non-negative double SVD recommended for sparseness
@@ -112,52 +161,6 @@ class NMFAnnParams:
     nmf_args: dictionary, optional
         Additional arguments for scikit-learn NMF algorithm. See:
         https://scikit-learn.org/stable/modules/generated/sklearn.decomposition.NMF.html
-    """
-
-    cube: np.ndarray = None
-    angle_list: np.ndarray = None
-    cube_ref: np.ndarray = None
-    radius_int: int = 0
-    fwhm: float = 4
-    asize: int = 4
-    n_segments: int = 1
-    delta_rot: Union[float, Tuple[float]] = (0.1, 1)
-    ncomp: int = 1
-    init_svd: LowEnum = Initsvd.NNDSVD
-    nproc: int = 1
-    min_frames_lib: int = 2
-    max_frames_lib: int = 200
-    scaling: LowEnum = None
-    imlib: LowEnum = Imlib.VIPFFT
-    interpolation: LowEnum = Interpolation.LANCZOS4
-    collapse: LowEnum = Collapse.MEDIAN
-    full_output: bool = False
-    verbose: bool = True
-    theta_init: float = 0
-    weights: List = None
-    cube_sig: np.ndarray = None
-    handle_neg: LowEnum = HandleNeg.MASK
-    max_iter: int = 1000
-    random_state: int = None
-    nmf_args: dict = field(default_factory=lambda: {})
-
-
-def nmf_annular(algo_params: NMFAnnParams = None, **all_kwargs):
-    """Non Negative Matrix Factorization in concentric annuli, for ADI/RDI
-    sequences. Alternative to the annular ADI-PCA processing that does not rely
-    on SVD or ED for obtaining a low-rank approximation of the datacube.
-    This function embeds the scikit-learn NMF algorithm solved through either
-    the coordinate descent or the multiplicative update method.
-
-    Parameters
-    ----------
-    algo_params: NMFAnnParams
-        Dataclass retaining all the needed parameters for NMF annular.
-    all_kwargs: dictionary, optional
-        Mix of the parameters that can initialize an algo_params and the optional
-        'rot_options' dictionnary, with keyword values for "imlib", "interpolation,
-        "border_mode", "mask_val",  "edge_blend", "interp_zeros", "ker" (see
-        documentation of ``vip_hci.preproc.frame_rotate``)
 
     Returns
     -------
@@ -167,11 +170,18 @@ def nmf_annular(algo_params: NMFAnnParams = None, **all_kwargs):
 
     """
     # Separating the parameters of the ParamsObject from the optionnal rot_options
-    class_params, rot_options = separate_kwargs_dict(
-        initial_kwargs=all_kwargs, parent_class=NMFAnnParams
-    )
+    class_params, rot_options = separate_kwargs_dict(initial_kwargs=all_kwargs,
+                                                     parent_class=NMF_ANNULAR_Params
+                                                     )
+
+    # Extracting the object of parameters (if any)
+    algo_params = None
+    if ALGO_KEY in rot_options.keys():
+        algo_params = rot_options[ALGO_KEY]
+        del rot_options[ALGO_KEY]
+
     if algo_params is None:
-        algo_params = NMFAnnParams(**class_params)
+        algo_params = NMF_ANNULAR_Params(*all_args, **class_params)
 
     if algo_params.verbose:
         global start_time
@@ -196,7 +206,8 @@ def nmf_annular(algo_params: NMFAnnParams = None, **all_kwargs):
         algo_params.delta_rot = [algo_params.delta_rot] * n_annuli
 
     if isinstance(algo_params.n_segments, int):
-        algo_params.n_segments = [algo_params.n_segments for _ in range(n_annuli)]
+        algo_params.n_segments = [
+            algo_params.n_segments for _ in range(n_annuli)]
     elif algo_params.n_segments == "auto":
         algo_params.n_segments = list()
         algo_params.n_segments.append(2)  # for first annulus
@@ -297,15 +308,18 @@ def nmf_annular(algo_params: NMFAnnParams = None, **all_kwargs):
                         > 0
                     ]
                 else:
-                    yp = [yy[i] for i in npts if np.amin(array[:, yy[i], xx[i]]) > 0]
-                    xp = [xx[i] for i in npts if np.amin(array[:, yy[i], xx[i]]) > 0]
+                    yp = [yy[i]
+                          for i in npts if np.amin(array[:, yy[i], xx[i]]) > 0]
+                    xp = [xx[i]
+                          for i in npts if np.amin(array[:, yy[i], xx[i]]) > 0]
                 yy = tuple(yp)
                 xx = tuple(xp)
             matrix_segm = array[:, yy, xx]  # shape [nframes x npx_segment]
             matrix_segm = matrix_scaling(matrix_segm, algo_params.scaling)
             if algo_params.cube_ref is not None:
                 matrix_segm_ref = algo_params.cube_ref[:, yy, xx]
-                matrix_segm_ref = matrix_scaling(matrix_segm_ref, algo_params.scaling)
+                matrix_segm_ref = matrix_scaling(
+                    matrix_segm_ref, algo_params.scaling)
             else:
                 matrix_segm_ref = None
             if algo_params.cube_sig is not None:
@@ -354,7 +368,8 @@ def nmf_annular(algo_params: NMFAnnParams = None, **all_kwargs):
     cube_der = cube_derotate(
         cube_out, algo_params.angle_list, nproc=algo_params.nproc, **rot_options
     )
-    frame = cube_collapse(cube_der, mode=algo_params.collapse, w=algo_params.weights)
+    frame = cube_collapse(
+        cube_der, mode=algo_params.collapse, w=algo_params.weights)
     if algo_params.verbose:
         print("Done derotating and combining.")
         timing(start_time)

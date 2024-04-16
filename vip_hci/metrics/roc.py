@@ -9,7 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from hciplot import plot_frames
 from scipy import stats
-from photutils import detect_sources
+from photutils.segmentation import detect_sources
 from munch import Munch
 from ..config import time_ini, timing, Progressbar
 from ..fm import cube_inject_companions
@@ -508,6 +508,21 @@ def compute_binary_map(frame, thresholds, injections, fwhm, npix=1,
             print("\nprocessing threshold #{}: {}".format(ithr + 1, threshold))
 
         segments = detect_sources(frame, threshold, npix, connectivity=4)
+
+        # required since photutils v0.7
+        if segments is None:
+            binmap = np.zeros_like(frame)
+            detections = 0
+            fps = 0
+            if debug:
+                print("done with threshold #{}".format(ithr))
+                print("result: {} detections, {} fps".format(detections, fps))
+
+            list_detections.append(detections)
+            list_binmaps.append(binmap)
+            list_fps.append(fps)
+            continue
+
         binmap = (segments.data != 0)
 
         if debug:

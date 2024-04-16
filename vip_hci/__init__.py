@@ -1,5 +1,4 @@
-__version__ = "1.4.2"
-
+__version__ = "1.6.0"
 
 from . import preproc
 from . import config

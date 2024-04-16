@@ -55,28 +55,65 @@ likelihood approach.
 """
 
 __author__ = "Carl-Henrik Dahlqvist, Thomas Bédrine"
-__all__ = ["fmmf", "FMMFParams"]
+__all__ = ["fmmf", "FMMF_Params"]
 
 from multiprocessing import cpu_count
 from dataclasses import dataclass, field
 import numpy as np
 import numpy.linalg as la
-from strenum import LowercaseStrEnum as LowEnum
+from enum import Enum
 from skimage.draw import disk
-from ..var import get_annulus_segments, frame_center
-from ..preproc import frame_crop, cube_crop_frames, cube_derotate
+from ..config.utils_param import setup_parameters, separate_kwargs_dict
 from ..config.utils_conf import pool_map, iterable
 from ..config import time_ini, timing
+from ..config.paramenum import VarEstim, Imlib, Interpolation, ALGO_KEY
 from ..fm import cube_inject_companions
 from ..preproc.derotation import _find_indices_adi
-from ..var.object_utils import setup_parameters
-from ..var.paramenum import VarEstim, Imlib, Interpolation
+from ..preproc import frame_crop, cube_crop_frames, cube_derotate
+from ..var import get_annulus_segments, frame_center
 
 
 @dataclass
-class FMMFParams:
+class FMMF_Params:
     """
     Set of parameters for the FMMF algorithm.
+
+    See function `fmmf` below for the documentation.
+    """
+
+    cube: np.ndarray = None
+    angle_list: np.ndarray = None
+    psf: np.ndarray = None
+    fwhm: float = None
+    min_r: int = None
+    max_r: int = None
+    model: str = "KLIP"
+    var: Enum = VarEstim.FR
+    param: dict = field(
+        default_factory=lambda: {"ncomp": 20,
+                                 "tolerance": 5e-3, "delta_rot": 0.5}
+    )
+    crop: int = 5
+    imlib: Enum = Imlib.VIPFFT
+    interpolation: Enum = Interpolation.LANCZOS4
+    nproc: int = 1
+    verbose: bool = True
+
+
+def fmmf(*all_args, **all_kwargs: dict):
+    """
+    Forward model matched filter generating SNR map and contrast map, using
+    either KLIP or LOCI as PSF subtraction techniques, as implemented in
+    [RUF17]_ and [DAH21a]_.
+
+    Parameters
+    ----------
+    all_args: list, optional
+        Positionnal arguments for the FMMF algorithm. Full list of parameters
+        below.
+    all_kwargs: dictionary, optional
+        Mix of keyword arguments that can initialize a FMMFParams or a FMMFParams
+        itself.
 
     Parameters
     ----------
@@ -106,15 +143,13 @@ class FMMFParams:
     model: string, optional
         Selected PSF-subtraction technique for the computation of the FMMF
         detection map. FMMF work either with KLIP or LOCI. Default is 'KLIP'.
-    var: LowerCaseStrEnum, see `vip_hci.var.paramenum.VarEstim`
+    var: Enum, see `vip_hci.config.paramenum.VarEstim`
         Model used for the residual noise variance estimation used in the
         matched filtering (maximum likelihood estimation of the flux and SNR).
     param: dict, optional
         Dictionnary regrouping the parameters used by the KLIP (ncomp and
         delta_rot) or LOCI (tolerance and delta_rot) PSF-subtraction
         technique:
-
-
         * ncomp : int, optional. Number of components used for the low-rank
         approximation of the speckle field. Default is 20.
         * tolerance: float, optional. Tolerance level for the approximation of
@@ -126,10 +161,10 @@ class FMMFParams:
     crop: int, optional
         Part of the PSF template considered in the estimation of the FMMF
         detection map. Default is 5.
-    imlib : LowerCaseStrEnum, see `vip_hci.var.paramenum.Imlib`
+    imlib : Enum, see `vip_hci.config.paramenum.Imlib`
         Parameter used for the derotation of the residual cube. See the
         documentation of the ``vip_hci.preproc.frame_rotate`` function.
-    interpolation : LowerCaseStrEnum, see `vip_hci.var.paramenum.Interpolation`
+    interpolation : Enum, see `vip_hci.config.paramenum.Interpolation`
         Parameter used for the derotation of the residual cube. See the
         documentation of the ``vip_hci.preproc.frame_rotate`` function.
     nproc : int or None, optional
@@ -139,39 +174,6 @@ class FMMFParams:
     verbose: bool, optional
         If True provide a message each time an annulus has been treated.
         Default True.
-    """
-
-    cube: np.ndarray = None
-    angle_list: np.ndarray = None
-    psf: np.ndarray = None
-    fwhm: float = None
-    min_r: int = None
-    max_r: int = None
-    model: str = "KLIP"
-    var: LowEnum = VarEstim.FR
-    param: dict = field(
-        default_factory=lambda: {"ncomp": 20, "tolerance": 5e-3, "delta_rot": 0.5}
-    )
-    crop: int = 5
-    imlib: LowEnum = Imlib.VIPFFT
-    interpolation: LowEnum = Interpolation.LANCZOS4
-    nproc: int = 1
-    verbose: bool = True
-
-
-def fmmf(algo_params: FMMFParams = None, **class_params: dict):
-    """
-    Forward model matched filter generating SNR map and contrast map, using
-    either KLIP or LOCI as PSF subtraction techniques, as implemented in
-    [RUF17]_ and [DAH21a]_.
-
-    Parameters
-    ----------
-    algo_params: FMMFParams
-        Dataclass retaining all the needed parameters for FMMF.
-    class_params: dict, optionnal
-        Set of parameters needed for an initialization of algo_params if none
-        was provided.
 
     Returns
     -------
@@ -183,8 +185,18 @@ def fmmf(algo_params: FMMFParams = None, **class_params: dict):
         the estimated standard deviation of the contrast).
 
     """
+    class_params, other_options = separate_kwargs_dict(
+        initial_kwargs=all_kwargs, parent_class=FMMF_Params
+    )
+
+    # Extracting the object of parameters (if any)
+    algo_params = None
+    if ALGO_KEY in other_options.keys():
+        algo_params = other_options[ALGO_KEY]
+        del other_options[ALGO_KEY]
+
     if algo_params is None:
-        algo_params = FMMFParams(**class_params)
+        algo_params = FMMF_Params(*all_args, **class_params)
     start_time = time_ini(algo_params.verbose)
 
     if algo_params.crop >= 2 * round(algo_params.fwhm) + 1:
@@ -201,7 +213,8 @@ def fmmf(algo_params: FMMFParams = None, **class_params: dict):
     if algo_params.nproc is None:
         algo_params.nproc = cpu_count() // 2
 
-    add_params = {"ann_center": iterable(range(algo_params.min_r, algo_params.max_r))}
+    add_params = {"ann_center": iterable(
+        range(algo_params.min_r, algo_params.max_r))}
 
     func_params = setup_parameters(
         params_obj=algo_params,
@@ -217,8 +230,10 @@ def fmmf(algo_params: FMMFParams = None, **class_params: dict):
         *func_params,
     )
 
-    flux_matrix = np.zeros((algo_params.cube.shape[1], algo_params.cube.shape[2]))
-    snr_matrix = np.zeros((algo_params.cube.shape[1], algo_params.cube.shape[2]))
+    flux_matrix = np.zeros(
+        (algo_params.cube.shape[1], algo_params.cube.shape[2]))
+    snr_matrix = np.zeros(
+        (algo_params.cube.shape[1], algo_params.cube.shape[2]))
 
     for res_temp in res_full:
         indices = get_annulus_segments(algo_params.cube[0], res_temp[2], 1)
@@ -269,7 +284,8 @@ def _snr_contrast_esti(
     # Computation of the reference PSF, and the matrices
     # required for the computation of the PSF forward models
 
-    pa_threshold = np.rad2deg(2 * np.arctan(delta_rot * fwhm / (2 * (ann_center))))
+    pa_threshold = np.rad2deg(
+        2 * np.arctan(delta_rot * fwhm / (2 * (ann_center))))
     mid_range = np.abs(np.amax(angle_list) - np.amin(angle_list)) / 2
     if pa_threshold >= mid_range - mid_range * 0.1:
         pa_threshold = float(mid_range - mid_range * 0.1)
@@ -382,7 +398,8 @@ def _snr_contrast_esti(
                 )
 
                 psf_map[b, indices[0][0], indices[0][1]] = psf_map_temp
-                psf_map[b, indices[0][0], indices[0][1]] -= np.mean(psf_map_temp)
+                psf_map[b, indices[0][0], indices[0]
+                        [1]] -= np.mean(psf_map_temp)
 
             psf_map_der = cube_derotate(
                 psf_map, angle_list, imlib=imlib, interpolation=interpolation
@@ -401,7 +418,8 @@ def _snr_contrast_esti(
 
             cube_res_fc = np.zeros_like(model_matrix)
 
-            matrix_res_fc = np.zeros((values_fc.shape[0], indices[0][0].shape[0]))
+            matrix_res_fc = np.zeros(
+                (values_fc.shape[0], indices[0][0].shape[0]))
 
             for e in range(values_fc.shape[0]):
                 recon_fc = np.dot(coef_list[e], values_fc[ind_ref_list[e]])
@@ -442,14 +460,16 @@ def _snr_contrast_esti(
                 psfm = frame_crop(
                     psfm_temp[j],
                     crop,
-                    cenxy=[int(psfm_temp.shape[-1] / 2), int(psfm_temp.shape[-1] / 2)],
+                    cenxy=[int(psfm_temp.shape[-1] / 2),
+                           int(psfm_temp.shape[-1] / 2)],
                     verbose=False,
                 )
 
             num.append(
                 np.multiply(
                     frame_crop(
-                        mcube[j], crop, cenxy=[poscentx, poscenty], verbose=False
+                        mcube[j], crop, cenxy=[
+                            poscentx, poscenty], verbose=False
                     ),
                     psfm,
                 ).sum()
@@ -476,7 +496,8 @@ def _var_esti(mcube, angle_list, var, crop, ann_center):
     if var == "FR":
         var_f = np.zeros(n)
 
-        indices = get_annulus_segments(mcube[0], ann_center - int(crop / 2), crop, 1)
+        indices = get_annulus_segments(
+            mcube[0], ann_center - int(crop / 2), crop, 1)
 
         poscentx = indices[0][1]
         poscenty = indices[0][0]
@@ -491,7 +512,8 @@ def _var_esti(mcube, angle_list, var, crop, ann_center):
 
         var_f = np.zeros((len(indicesy), n))
 
-        indices = get_annulus_segments(mcube[0], ann_center - int(crop / 2), crop, 1)
+        indices = get_annulus_segments(
+            mcube[0], ann_center - int(crop / 2), crop, 1)
 
         for a in range(len(indicesy)):
             indc = disk((indicesy[a], indicesx[a]), 3)
@@ -519,23 +541,28 @@ def _var_esti(mcube, angle_list, var, crop, ann_center):
 
         for a in range(0, len(indicesy)):
             radist = np.sqrt(
-                (indicesx[a] - int(x / 2)) ** 2 + (indicesy[a] - int(y / 2)) ** 2
+                (indicesx[a] - int(x / 2)) ** 2 +
+                (indicesy[a] - int(y / 2)) ** 2
             )
 
             if (indicesy[a] - int(y / 2)) >= 0:
-                ang_s = np.arccos((indicesx[a] - int(x / 2)) / radist) / np.pi * 180
+                ang_s = np.arccos(
+                    (indicesx[a] - int(x / 2)) / radist) / np.pi * 180
             else:
                 ang_s = (
-                    360 - np.arccos((indicesx[a] - int(x / 2)) / radist) / np.pi * 180
+                    360 -
+                    np.arccos((indicesx[a] - int(x / 2)) / radist) / np.pi * 180
                 )
 
             for b in range(n):
                 twopi = 2 * np.pi
                 sigposy = int(
-                    y / 2 + np.sin((ang_s - angle_list[b]) / 360 * twopi) * radist
+                    y / 2 +
+                    np.sin((ang_s - angle_list[b]) / 360 * twopi) * radist
                 )
                 sigposx = int(
-                    x / 2 + np.cos((ang_s - angle_list[b]) / 360 * twopi) * radist
+                    x / 2 +
+                    np.cos((ang_s - angle_list[b]) / 360 * twopi) * radist
                 )
 
                 y0 = int(sigposy - int(crop / 2))
@@ -660,9 +687,8 @@ def _perturb(
     return model_sci[None, :] - klipped_oversub - klipped_selfsub
 
 
-def KLIP_patch(
-    frame, matrix, numbasis, angle_list, fwhm, pa_threshold, ann_center, nframes=None
-):
+def KLIP_patch(frame, matrix, numbasis, angle_list, fwhm, pa_threshold,
+               ann_center, nframes=None):
     """
     Function allowing the computation of the reference PSF via KLIP for a
     given sub-region of the original ADI sequence. Code inspired by the
@@ -707,8 +733,8 @@ def KLIP_patch(
 
     # Computation of the eigenvectors/values of the covariance matrix
     evals, evecs = la.eigh(covar_psfs)
-    evals = np.copy(evals[int(tot_basis - max_basis) : int(tot_basis)])
-    evecs = np.copy(evecs[:, int(tot_basis - max_basis) : int(tot_basis)])
+    evals = np.copy(evals[int(tot_basis - max_basis): int(tot_basis)])
+    evecs = np.copy(evecs[:, int(tot_basis - max_basis): int(tot_basis)])
     evals = np.copy(evals[::-1])
     evecs = np.copy(evecs[:, ::-1])
 
@@ -722,7 +748,7 @@ def KLIP_patch(
     sci_rows = np.reshape(sci_mean_sub, (1, N_pix))
 
     inner_products = np.dot(sci_rows, KL_basis.T)
-    inner_products[0, int(max_basis) : :] = 0
+    inner_products[0, int(max_basis)::] = 0
 
     # Projection of the science image on the selected prinicpal component
     # to generate the speckle field model
@@ -744,9 +770,8 @@ def KLIP_patch(
     )
 
 
-def LOCI_FM(
-    cube, psf, ann_center, angle_list, asize, fwhm, Tol, delta_rot, pa_threshold
-):
+def LOCI_FM(cube, psf, ann_center, angle_list, asize, fwhm, Tol, delta_rot,
+            pa_threshold):
     """
     Computation of the optimal factors weigthing the linear combination of
     reference frames used to obtain the modeled speckle field for each frame
@@ -797,7 +822,8 @@ def LOCI_FM(
     return cube_res, ind_ref_list, coef_list
 
 
-def _leastsq_patch_fm(ayxyx, angle_list, fwhm, cube, dist_threshold, tol, psf=None):
+def _leastsq_patch_fm(ayxyx, angle_list, fwhm, cube, dist_threshold, tol,
+                      psf=None):
     """
     Function allowing th estimation of the optimal factors for the modeled
     speckle field estimation via the LOCI framework. The code has been
@@ -826,7 +852,8 @@ def _leastsq_patch_fm(ayxyx, angle_list, fwhm, cube, dist_threshold, tol, psf=No
     n_frames = cube.shape[0]
 
     for i in range(n_frames):
-        ind_fr_i = _find_indices_adi(angle_list, i, pa_threshold, truncate=False)
+        ind_fr_i = _find_indices_adi(
+            angle_list, i, pa_threshold, truncate=False)
         if len(ind_fr_i) > 0:
             A = values_opt[ind_fr_i]
             b = values_opt[i]

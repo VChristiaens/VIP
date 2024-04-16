@@ -1,5 +1,4 @@
 #! /usr/bin/env python
-
 """
 Module with detection algorithms.
 """
@@ -13,12 +12,11 @@ __all__ = ['detection',
 import numpy as np
 import pandas as pn
 from hciplot import plot_frames
-from scipy.ndimage.filters import correlate
-from skimage import feature
-from astropy.stats import sigma_clipped_stats
-from astropy.stats import gaussian_fwhm_to_sigma, gaussian_sigma_to_fwhm
+from scipy.ndimage import correlate
+from astropy.stats import (sigma_clipped_stats, gaussian_fwhm_to_sigma,
+                           gaussian_sigma_to_fwhm)
 from astropy.modeling import models, fitting
-from skimage.feature import peak_local_max
+from skimage.feature import peak_local_max, blob_log, blob_dog
 from ..var import (mask_circle, get_square, frame_center, fit_2dgaussian,
                    frame_filter_lowpass, dist_matrix)
 from ..config.utils_conf import sep
@@ -28,11 +26,13 @@ from .snr_source import snr, snrmap, frame_report
 def detection(array, fwhm=4, psf=None, mode='lpeaks', bkg_sigma=5,
               matched_filter=False, mask=True, snr_thresh=5, nproc=1, plot=True,
               debug=False, full_output=False, verbose=True, **kwargs):
-    """ Finds blobs in a 2d array. The algorithm is designed for automatically
-    finding planets in post-processed high contrast final frames. Blob can be
-    defined as a region of an image in which some properties are constant or
-    vary within a prescribed range of values. See ``Notes`` below to read about
-    the algorithm details.
+    """Automatically find point-like sources in a 2d array.
+
+    The algorithm is designed for automatically finding planets in
+    post-processed high contrast final frames. Blob can be defined as a region
+    of an image in which some properties are constant or vary within a
+    prescribed range of values. See ``Notes`` below to read about the algorithm
+    details.
 
     Parameters
     ----------
@@ -282,9 +282,9 @@ def detection(array, fwhm=4, psf=None, mode='lpeaks', bkg_sigma=5,
 
     elif mode == 'log':
         sigma = fwhm * gaussian_fwhm_to_sigma
-        coords = feature.blob_log(frame_det.astype('float'),
-                                  threshold=bkg_level, min_sigma=sigma-.5,
-                                  max_sigma=sigma+.5)
+        coords = blob_log(frame_det.astype('float'),
+                          threshold=bkg_level, min_sigma=sigma-.5,
+                          max_sigma=sigma+.5)
         if len(coords) == 0:
             print_abort()
             return 0, 0
@@ -296,9 +296,9 @@ def detection(array, fwhm=4, psf=None, mode='lpeaks', bkg_sigma=5,
 
     elif mode == 'dog':
         sigma = fwhm * gaussian_fwhm_to_sigma
-        coords = feature.blob_dog(frame_det.astype('float'),
-                                  threshold=bkg_level, min_sigma=sigma-.5,
-                                  max_sigma=sigma+.5)
+        coords = blob_dog(frame_det.astype('float'),
+                          threshold=bkg_level, min_sigma=sigma-.5,
+                          max_sigma=sigma+.5)
         if len(coords) == 0:
             print_abort()
             return 0, 0
@@ -366,7 +366,8 @@ def detection(array, fwhm=4, psf=None, mode='lpeaks', bkg_sigma=5,
     xx_final = np.array(xx_final)
     yy_out = np.array(yy_out)
     xx_out = np.array(xx_out)
-    table = pn.DataFrame({'y': yy_final.tolist(), 'x': xx_final.tolist(), 'px_snr': snr_final})
+    table = pn.DataFrame(
+        {'y': yy_final.tolist(), 'x': xx_final.tolist(), 'px_snr': snr_final})
 
     if plot:
         coords = tuple(zip(xx_out.tolist() + xx_final.tolist(),
@@ -437,15 +438,15 @@ def peak_coordinates(obj_tmp, fwhm, approx_peak=None, search_box=None,
             sbox = np.zeros([n_z, 2*sbox_y+1, 2*sbox_x+1])
 
     if ndims == 2:
-        med_filt_tmp = frame_filter_lowpass(obj_tmp, 'median', 
+        med_filt_tmp = frame_filter_lowpass(obj_tmp, 'median',
                                             median_size=int(fwhm))
         if approx_peak is None:
-            ind_max = np.unravel_index(med_filt_tmp.argmax(),
+            ind_max = np.unravel_index(np.nanargmax(med_filt_tmp),
                                        med_filt_tmp.shape)
         else:
             sbox = med_filt_tmp[approx_peak[0]-sbox_y:approx_peak[0]+sbox_y+1,
                                 approx_peak[1]-sbox_x:approx_peak[1]+sbox_x+1]
-            ind_max_sbox = np.unravel_index(sbox.argmax(), sbox.shape)
+            ind_max_sbox = np.unravel_index(np.nanargmax(sbox), sbox.shape)
             ind_max = (approx_peak[0]-sbox_y+ind_max_sbox[0],
                        approx_peak[1]-sbox_x+ind_max_sbox[1])
 
@@ -462,23 +463,23 @@ def peak_coordinates(obj_tmp, fwhm, approx_peak=None, search_box=None,
             med_filt_tmp[zz] = frame_filter_lowpass(obj_tmp[zz], 'median',
                                                     median_size=int(fwhm[zz]))
             if approx_peak is None:
-                ind_ch_max[zz] = np.unravel_index(med_filt_tmp[zz].argmax(),
+                ind_ch_max[zz] = np.unravel_index(np.nanargmax(med_filt_tmp[zz]),
                                                   med_filt_tmp[zz].shape)
             else:
                 sbox[zz] = med_filt_tmp[zz, approx_peak[0]-sbox_y:
                                         approx_peak[0]+sbox_y+1,
                                         approx_peak[1]-sbox_x:
                                         approx_peak[1]+sbox_x+1]
-                ind_max_sbox = np.unravel_index(sbox[zz].argmax(),
+                ind_max_sbox = np.unravel_index(np.nanargmax(sbox[zz]),
                                                 sbox[zz].shape)
                 ind_ch_max[zz] = (approx_peak[0]-sbox_y+ind_max_sbox[0],
                                   approx_peak[1]-sbox_x+ind_max_sbox[1])
 
         if approx_peak is None:
-            ind_max = np.unravel_index(med_filt_tmp.argmax(),
+            ind_max = np.unravel_index(np.nanargmax(med_filt_tmp),
                                        med_filt_tmp.shape)
         else:
-            ind_max_tmp = np.unravel_index(sbox.argmax(),
+            ind_max_tmp = np.unravel_index(np.nanargmax(sbox),
                                            sbox.shape)
             ind_max = (ind_max_tmp[0]+approx_peak[0]-sbox_y,
                        ind_max_tmp[1]+approx_peak[1]-sbox_x)

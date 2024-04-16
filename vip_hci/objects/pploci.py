@@ -2,7 +2,7 @@
 """Module for the post-processing LOCI algorithm."""
 
 __author__ = "Thomas Bédrine"
-__all__ = ["LOCIBuilder"]
+__all__ = ["LOCIBuilder", "PPLOCI"]
 
 
 from typing import Optional
@@ -13,12 +13,12 @@ from dataclass_builder import dataclass_builder
 
 from .dataset import Dataset
 from .postproc import PostProc
-from ..psfsub import xloci, LOCIParams
+from ..psfsub import xloci, XLOCI_Params
 from ..config.utils_conf import algo_calculates_decorator as calculates
 
 
 @dataclass
-class PPLOCI(PostProc, LOCIParams):
+class PPLOCI(PostProc, XLOCI_Params):
     """
     Post-processing LOCI algorithm.
 
@@ -65,6 +65,7 @@ class PPLOCI(PostProc, LOCIParams):
             ``vip_hci.preproc.frame_rotate``)
 
         """
+        self.snr_map = None
         self._update_dataset(dataset)
 
         if self.dataset.fwhm is None:
@@ -75,9 +76,10 @@ class PPLOCI(PostProc, LOCIParams):
         if nproc is not None:
             self.nproc = nproc
 
-        params_dict = self._create_parameters_dict(LOCIParams)
+        params_dict = self._create_parameters_dict(XLOCI_Params)
 
-        res = xloci(algo_params=self, **rot_options)
+        all_params = {"algo_params": self, **rot_options}
+        res = xloci(**all_params)
 
         self.cube_res, self.cube_der, self.frame_final = res
 

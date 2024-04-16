@@ -13,34 +13,70 @@ for ADI and RDI data, in full frames.
 """
 
 __author__ = "Thomas Bédrine, Carlos Alberto Gomez Gonzalez, Valentin Christiaens"
-__all__ = ["nmf", "NMFParams"]
+__all__ = ["nmf", "NMF_Params"]
 
 import numpy as np
 from sklearn.decomposition import NMF
 from dataclasses import dataclass, field
-from strenum import LowercaseStrEnum as LowEnum
-from typing import Tuple
+from enum import Enum
+from typing import Tuple, List
+from ..config.utils_param import setup_parameters, separate_kwargs_dict
+from ..config.paramenum import Collapse, HandleNeg, Initsvd, ALGO_KEY
+from ..config import timing, time_ini
 from ..preproc import cube_derotate, cube_collapse
 from ..preproc.derotation import _compute_pa_thresh, _find_indices_adi
-from ..var import (
-    prepare_matrix,
-    reshape_matrix,
-    frame_center,
-    dist,
-    matrix_scaling,
-    mask_circle,
-)
-from ..var.object_utils import setup_parameters, separate_kwargs_dict
-from ..var.paramenum import Collapse, HandleNeg, Initsvd
-from ..config import timing, time_ini
+from ..var import (prepare_matrix, reshape_matrix, frame_center, dist,
+                   matrix_scaling, mask_circle)
 
 
 @dataclass
-class NMFParams:
+class NMF_Params:
     """
     Set of parameters for the NMF full-frame algorithm.
 
+    See function `nmf` below for the documentation.
+    """
+
+    cube: np.ndarray = None
+    angle_list: np.ndarray = None
+    cube_ref: np.ndarray = None
+    ncomp: int = 1
+    scaling: Enum = None
+    max_iter: int = 10000
+    random_state: int = None
+    mask_center_px: int = None
+    source_xy: Tuple[int] = None
+    delta_rot: float = 1
+    fwhm: float = 4
+    init_svd: Enum = Initsvd.NNDSVD
+    collapse: Enum = Collapse.MEDIAN
+    full_output: bool = False
+    verbose: bool = True
+    cube_sig: np.ndarray = None
+    handle_neg: Enum = HandleNeg.MASK
+    nmf_args: dict = field(default_factory=lambda: {})
+
+
+def nmf(*all_args: List, **all_kwargs: dict):
+    """Non Negative Matrix Factorization [LEE99]_ for ADI sequences [GOM17]_.
+    Alternative to the full-frame ADI-PCA processing that does not rely on SVD
+    or ED for obtaining a low-rank approximation of the datacube. This function
+    embeds the scikit-learn NMF algorithm solved through either the coordinate
+    descent or the multiplicative update method.
+
     Parameters
+    ----------
+    all_args: list, optional
+        Positionnal arguments for the NMF algorithm. Full list of parameters
+        below.
+    all_kwargs: dictionary, optional
+        Mix of keyword arguments that can initialize a NMFParams and the optional
+        'rot_options' dictionnary, with keyword values for "border_mode", "mask_val",
+        "edge_blend", "interp_zeros", "ker" (see documentation of
+        ``vip_hci.preproc.frame_rotate``). Can also contain a NMFParams named as
+        `algo_params`.
+
+    NMF parameters
     ----------
     cube : numpy ndarray, 3d
         Input cube.
@@ -51,7 +87,7 @@ class NMFParams:
     ncomp : int, optional
         How many components are used as for low-rank approximation of the
         datacube.
-    scaling : LowerCaseStrEnum, see `vip_hci.var.paramenum.Scaling`
+    scaling : Enum, see `vip_hci.config.paramenum.Scaling`
         With None, no scaling is performed on the input data before SVD. With
         "temp-mean" then temporal px-wise mean subtraction is done, with
         "spat-mean" then the spatial mean is subtracted, with "temp-standard"
@@ -73,23 +109,23 @@ class NMFParams:
         given (X,Y) coordinates are computed.
     delta_rot : float, optional
         Factor for tunning the parallactic angle threshold, expressed in FWHM.
-        Default is 1 (excludes 1xFHWM on each side of the considered frame).
+        Default is 1 (excludes 1xFWHM on each side of the considered frame).
     fwhm : float, optional
-        Known size of the FHWM in pixels to be used. Default value is 4.
-    init_svd: LowerCaseStrEnum, see `vip_hci.var.paramenum.Initsvd`
+        Known size of the FWHM in pixels to be used. Default value is 4.
+    init_svd: Enum, see `vip_hci.config.paramenum.Initsvd`
         Method used to initialize the iterative procedure to find H and W.
         'nndsvd': non-negative double SVD recommended for sparseness
         'nndsvda': NNDSVD where zeros are filled with the average of cube;
         recommended when sparsity is not desired
         'random': random initial non-negative matrix
-    collapse : LowerCaseStrEnum, see `vip_hci.var.paramenum.Collapse`
+    collapse : Enum, see `vip_hci.config.paramenum.Collapse`
         Sets the way of collapsing the frames for producing a final image.
     full_output: boolean, optional
         Whether to return the final median combined image only or with other
         intermediate arrays.
     verbose : {True, False}, bool optional
         If True prints intermediate info and timing.
-    handle_neg: LowerCaseStrEnum, see `vip_hci.var.paramenum.HandleNeg`
+    handle_neg: Enum, see `vip_hci.config.paramenum.HandleNeg`
         Determines how to handle negative values: mask them, set them to zero,
         or subtract the minimum value in the arrays. Note: 'mask' or 'null'
         may leave significant artefacts after derotation of residual cube
@@ -98,44 +134,6 @@ class NMFParams:
     nmf_args : dictionary, optional
         Additional arguments for scikit-learn NMF algorithm. See:
         https://scikit-learn.org/stable/modules/generated/sklearn.decomposition.NMF.html
-    """
-
-    cube: np.ndarray = None
-    angle_list: np.ndarray = None
-    cube_ref: np.ndarray = None
-    ncomp: int = 1
-    scaling: LowEnum = None
-    max_iter: int = 10000
-    random_state: int = None
-    mask_center_px: int = None
-    source_xy: Tuple[int] = None
-    delta_rot: float = 1
-    fwhm: float = 4
-    init_svd: LowEnum = Initsvd.NNDSVD
-    collapse: LowEnum = Collapse.MEDIAN
-    full_output: bool = False
-    verbose: bool = True
-    cube_sig: np.ndarray = None
-    handle_neg: LowEnum = HandleNeg.MASK
-    nmf_args: dict = field(default_factory=lambda: {})
-
-
-def nmf(algo_params: NMFParams = None, **all_kwargs):
-    """Non Negative Matrix Factorization [LEE99]_ for ADI sequences [GOM17]_.
-    Alternative to the full-frame ADI-PCA processing that does not rely on SVD
-    or ED for obtaining a low-rank approximation of the datacube. This function
-    embeds the scikit-learn NMF algorithm solved through either the coordinate
-    descent or the multiplicative update method.
-
-    Parameters
-    ----------
-    algo_params: NMFParams
-        Dataclass retaining all the needed parameters for NMF full-frame.
-    rot_options: dictionary, optional
-        Dictionary with optional keyword values for "nproc", "imlib",
-        "interpolation, "border_mode", "mask_val",  "edge_blend",
-        "interp_zeros", "ker" (see documentation of
-        ``vip_hci.preproc.frame_rotate``)
 
     Returns
     -------
@@ -146,10 +144,17 @@ def nmf(algo_params: NMFParams = None, **all_kwargs):
     """
     # Separating the parameters of the ParamsObject from the optionnal rot_options
     class_params, rot_options = separate_kwargs_dict(
-        initial_kwargs=all_kwargs, parent_class=NMFParams
+        initial_kwargs=all_kwargs, parent_class=NMF_Params
     )
+
+    # Extracting the object of parameters (if any)
+    algo_params = None
+    if ALGO_KEY in rot_options.keys():
+        algo_params = rot_options[ALGO_KEY]
+        del rot_options[ALGO_KEY]
+
     if algo_params is None:
-        algo_params = NMFParams(**class_params)
+        algo_params = NMF_Params(*all_args, **class_params)
 
     array = algo_params.cube.copy()
     if algo_params.verbose:
@@ -164,7 +169,8 @@ def nmf(algo_params: NMFParams = None, **all_kwargs):
         if algo_params.mask_center_px:
             array = mask_circle(array, algo_params.mask_center_px)
         if algo_params.cube_sig is not None:
-            yy, xx = np.where(np.amin(array - np.abs(algo_params.cube_sig), axis=0) > 0)
+            yy, xx = np.where(
+                np.amin(array - np.abs(algo_params.cube_sig), axis=0) > 0)
         else:
             yy, xx = np.where(np.amin(array, axis=0) > 0)
         H_tmp = np.zeros([algo_params.ncomp, y, x])
@@ -182,7 +188,8 @@ def nmf(algo_params: NMFParams = None, **all_kwargs):
         if algo_params.handle_neg == HandleNeg.NULL:
             if algo_params.cube_sig is not None:
                 array[np.where(array - algo_params.cube_sig < 0)] = 0
-                algo_params.cube_sig[np.where(array - algo_params.cube_sig < 0)] = 0
+                algo_params.cube_sig[np.where(
+                    array - algo_params.cube_sig < 0)] = 0
             else:
                 array[np.where(array < 0)] = 0
 
@@ -266,9 +273,11 @@ def nmf(algo_params: NMFParams = None, **all_kwargs):
         yc, xc = frame_center(algo_params.cube[0], False)
         x1, y1 = algo_params.source_xy
         ann_center = dist(yc, xc, y1, x1)
-        pa_thr = _compute_pa_thresh(ann_center, algo_params.fwhm, algo_params.delta_rot)
+        pa_thr = _compute_pa_thresh(
+            ann_center, algo_params.fwhm, algo_params.delta_rot)
         mid_range = (
-            np.abs(np.amax(algo_params.angle_list) - np.amin(algo_params.angle_list))
+            np.abs(np.amax(algo_params.angle_list) -
+                   np.amin(algo_params.angle_list))
             / 2
         )
         if pa_thr >= mid_range - mid_range * 0.1:
@@ -291,7 +300,8 @@ def nmf(algo_params: NMFParams = None, **all_kwargs):
             func_params = setup_parameters(
                 params_obj=algo_params, fkt=_project_subtract, **add_params
             )
-            res_result = _project_subtract(**func_params, **algo_params.nmf_args)
+            res_result = _project_subtract(
+                **func_params, **algo_params.nmf_args)
             # ! Instead of reshaping, fill frame using get_annulus?
             if algo_params.full_output:
                 residuals = res_result[0]

@@ -1,8 +1,5 @@
 #! /usr/bin/env python
-
-"""
-Module with fake companion injection functions.
-"""
+"""Module with fake companion injection functions."""
 
 __author__ = 'Carlos Alberto Gomez Gonzalez, Valentin Christiaens'
 __all__ = ['collapse_psf_cube',
@@ -15,18 +12,13 @@ from multiprocessing import cpu_count
 import numpy as np
 from scipy import stats
 from scipy.interpolate import interp1d
-from packaging import version
-import photutils
+
 try:
     from photutils.aperture import aperture_photometry, CircularAperture
 except:
     from photutils import aperture_photometry, CircularAperture
-if version.parse(photutils.__version__) >= version.parse('0.3'):
-    # for photutils version >= '0.3' use photutils.centroids.centroid_com
-    from photutils.centroids import centroid_com as cen_com
-else:
-    # for photutils version < '0.3' use photutils.centroid_com
-    import photutils.centroid_com as cen_com
+from photutils.centroids import centroid_com
+
 from ..preproc import (cube_crop_frames, frame_shift, frame_crop, cube_shift,
                        frame_rotate)
 from ..var import (frame_center, fit_2dgaussian, fit_2dairydisk, fit_2dmoffat,
@@ -39,7 +31,8 @@ def cube_inject_companions(array, psf_template, angle_list, flevel, rad_dists,
                            interpolation='lanczos4', transmission=None,
                            radial_gradient=False, full_output=False,
                            verbose=False, nproc=1):
-    """ Injects fake companions in branches, at given radial distances.
+    """Inject fake companions in branches and given radial distances in an ADI\
+    cube.
 
     Parameters
     ----------
@@ -57,8 +50,8 @@ def cube_inject_companions(array, psf_template, angle_list, flevel, rad_dists,
     angle_list : 1d numpy ndarray
         List of parallactic angles, in degrees.
     flevel : float or 1d array or 2d array
-        Factor for controlling the brightness of the fake companions. If a float,
-        the same flux is used for all injections.
+        Factor for controlling the brightness of the fake companions. If a
+        float, the same flux is used for all injections.
         [3D input cube]: if a list/1d array is provided, it should have same
         length as number of frames in the 3D cube (can be used to take into
         account varying observing conditions or airmass).
@@ -66,11 +59,11 @@ def cube_inject_companions(array, psf_template, angle_list, flevel, rad_dists,
         length as the number of spectral channels (i.e. provide a spectrum). If
         a 2d array, it should be n_wavelength x n_frames (can e.g. be used to
         inject a spectrum in varying conditions).
+    rad_dists : float, list or array 1d
+        Vector of radial distances of fake companions in pixels.
     plsc : float or None
         Value of the plsc in arcsec/px. Only used for printing debug output when
         ``verbose=True``.
-    rad_dists : float, list or array 1d
-        Vector of radial distances of fake companions in pixels.
     n_branches : int, optional
         Number of azimutal branches.
     theta : float, optional
@@ -99,7 +92,7 @@ def cube_inject_companions(array, psf_template, angle_list, flevel, rad_dists,
     verbose : bool, optional
         If True prints out additional information.
     nproc: int or None, optional
-        Number of CPUs to use for multiprocessing. If None, will be 
+        Number of CPUs to use for multiprocessing. If None, will be
         automatically set to half the number of available CPUs.
 
     Returns
@@ -166,14 +159,6 @@ def cube_inject_companions(array, psf_template, angle_list, flevel, rad_dists,
                                                  -(ang*180/np.pi-angle_list[0]),
                                                  imlib=imlib_rot,
                                                  interpolation=interpolation)
-
-                        # shift_y = rad * np.sin(ang - np.deg2rad(angle_list[0]))
-                        # shift_x = rad * np.cos(ang - np.deg2rad(angle_list[0]))
-                        # dsy = shift_y-int(shift_y)
-                        # dsx = shift_x-int(shift_x)
-                        # fc_fr_ang = frame_shift(psf_trans, dsy, dsx, imlib_sh,
-                        #                         interpolation,
-                        #                         border_mode='constant')
                     else:
                         fc_fr_rad = interp_trans(rad)*fc_fr
                 if nproc == 1:
@@ -248,7 +233,7 @@ def cube_inject_companions(array, psf_template, angle_list, flevel, rad_dists,
         if transmission.ndim != 2:
             raise ValueError("transmission should be a 2D ndarray")
         elif t_nz != 2 and t_nz != 1+array.shape[0]:
-            msg = "transmission dimensions should be either (2,N) or (n_wave+1, N)"
+            msg = "transmission dimensions should be (2,N) or (n_wave+1, N)"
             raise ValueError(msg)
         # if transmission doesn't have right format for interpolation, adapt it
         diag = np.sqrt(2)*array.shape[-1]
@@ -325,10 +310,7 @@ def cube_inject_companions(array, psf_template, angle_list, flevel, rad_dists,
 def _frame_shift_fcp(fc_fr_rad, array, rad, ang, derot_ang, flevel, size_fc,
                      imlib_sh, imlib_rot, interpolation, transmission,
                      radial_gradient):
-    """
-    Specific cube shift algorithm for injection of fake companions
-    """
-
+    """Specific cube shift algorithm to inject fake companions."""
     ceny, cenx = frame_center(array)
     sizey = array.shape[-2]
     sizex = array.shape[-1]
@@ -480,10 +462,10 @@ def generate_cube_copies_with_injections(array, psf_template, angle_list, plsc,
 
 def frame_inject_companion(array, array_fc, pos_y, pos_x, flux,
                            imlib='vip-fft', interpolation='lanczos4'):
-    """ 
-    Injects a fake companion in a single frame (it could be a single
-    multi-wavelength frame) at given coordinates, or in a cube (at the same
-    coordinates, flux and with same fake companion image throughout the cube).
+    """
+    Inject a fake companion in a single frame (can be a single multi-wavelength\
+    frame) at given coordinates, or in a cube (at the same coordinates, flux\
+    and with same fake companion image throughout the cube).
 
     Parameters
     ----------
@@ -540,7 +522,7 @@ def frame_inject_companion(array, array_fc, pos_y, pos_x, flux,
 
 
 def collapse_psf_cube(array, size, fwhm=4, verbose=True, collapse='mean'):
-    """ Creates a 2d PSF template from a cube of non-saturated off-axis frames
+    """Create a 2d PSF template from a cube of non-saturated off-axis frames\
     of the star by taking the mean and normalizing the PSF flux.
 
     Parameters
@@ -561,6 +543,7 @@ def collapse_psf_cube(array, size, fwhm=4, verbose=True, collapse='mean'):
     -------
     psf_normd : numpy ndarray
         Normalized PSF.
+
     """
     if array.ndim != 3 and array.ndim != 4:
         raise TypeError('Array is not a cube, 3d or 4d array.')
@@ -585,9 +568,11 @@ def normalize_psf(array, fwhm='fit', size=None, threshold=None, mask_core=None,
                   model='gauss', imlib='vip-fft', interpolation='lanczos4',
                   force_odd=True, correct_outliers=True, full_output=False,
                   verbose=True, debug=False):
-    """ Normalizes a PSF (2d or 3d array), to have the flux in a 1xFWHM
-    aperture equal to one. It also allows to crop the array and center the PSF
-    at the center of the array(s).
+    """Normalize a PSF (2d or 3d array), to have the flux in a 1xFWHM aperture\
+    equal to one.
+
+    It also allows cropping of the array. Automatic recentering of the PSF is
+    done internally - as long as it is already roughly centered within ~2px.
 
     Parameters
     ----------
@@ -600,8 +585,8 @@ def normalize_psf(array, fwhm='fit', size=None, threshold=None, mask_core=None,
         estimate the FWHM in 2D or 3D PSF arrays.
     size : int or None, optional
         If int it will correspond to the size of the centered sub-image to be
-        cropped form the PSF array. The PSF is assumed to be roughly centered wrt
-        the array.
+        cropped form the PSF array. The PSF is assumed to be roughly centered
+        with respect to the array.
     threshold : None or float, optional
         Sets to zero values smaller than threshold (in the normalized image).
         This can be used to only leave the core of the PSF.
@@ -647,10 +632,10 @@ def normalize_psf(array, fwhm='fit', size=None, threshold=None, mask_core=None,
 
     """
     def psf_norm_2d(psf, fwhm, threshold, mask_core, full_output, verbose):
-        """ 2d case """
+        """Normalize PSF in the 2d case."""
         # we check if the psf is centered and fix it if needed
         cy, cx = frame_center(psf, verbose=False)
-        xcom, ycom = cen_com(psf)
+        xcom, ycom = centroid_com(psf)
         if not (np.allclose(cy, ycom, atol=1e-2) or
                 np.allclose(cx, xcom, atol=1e-2)):
             # first we find the centroid and put it in the center of the array
@@ -725,7 +710,10 @@ def normalize_psf(array, fwhm='fit', size=None, threshold=None, mask_core=None,
         else:
             array = array.copy()
 
-        if fwhm == 'fit':
+        if not np.isscalar(fwhm):
+            msg = "For a 2d input array, fwhm should be a scalar or string."
+            raise ValueError(msg)
+        elif fwhm == 'fit':
             fit = fit_2d(array, full_output=True, debug=debug)
             if model == 'gauss':
                 fwhm = np.mean((fit['fwhm_x'], fit['fwhm_y']))
@@ -760,37 +748,44 @@ def normalize_psf(array, fwhm='fit', size=None, threshold=None, mask_core=None,
             else:
                 array = array.copy()
 
-        if isinstance(fwhm, (int, float)):
-            fwhm = [fwhm] * array.shape[0]
-        elif fwhm == 'fit':
-            fits_vect = [fit_2d(array[i], full_output=True, debug=debug) for i
-                         in range(n)]
-            if model == 'gauss':
-                fwhmx = [fits_vect[i]['fwhm_x'] for i in range(n)]
-                fwhmy = [fits_vect[i]['fwhm_y'] for i in range(n)]
-                fwhm_vect = [np.mean((fwhmx[i], fwhmy[i])) for i in range(n)]
-                fwhm = np.array(fwhm_vect)
-                if verbose:
-                    print("Mean FWHM per channel: ")
-                    print_precision(fwhm)
-            elif model == 'moff' or model == 'airy':
-                fwhm_vect = [fits_vect[i]['fwhm'] for i in range(n)]
-                fwhm = np.array(fwhm_vect)
-                fwhm = fwhm.flatten()
-                if verbose:
-                    print("FWHM per channel:")
-                    print_precision(fwhm)
-            # Replace outliers if needed
-            if correct_outliers:
-                if np.sum(np.isnan(fwhm)) > 0:
-                    for f in range(n):
-                        if np.isnan(fwhm[f]) and f != 0 and f != n-1:
-                            fwhm[f] = np.nanmean(np.array([fwhm[f-1],
-                                                           fwhm[f+1]]))
-                        elif np.isnan(fwhm[f]):
-                            msg = "2D fit failed for first or last channel. "
-                            msg += "Try other parameters?"
-                            raise ValueError(msg)
+        if np.isscalar(fwhm):
+            if fwhm != 'fit':
+                fwhm = [fwhm] * array.shape[0]
+            else:
+                fits_vect = [fit_2d(array[i],
+                                    full_output=True,
+                                    debug=debug) for i in range(n)]
+                if model == 'gauss':
+                    fwhmx = [fits_vect[i]['fwhm_x'] for i in range(n)]
+                    fwhmy = [fits_vect[i]['fwhm_y'] for i in range(n)]
+                    fwhm_vect = [np.mean((fwhmx[i], fwhmy[i]))
+                                 for i in range(n)]
+                    fwhm = np.array(fwhm_vect)
+                    if verbose:
+                        print("Mean FWHM per channel: ")
+                        print_precision(fwhm)
+                elif model == 'moff' or model == 'airy':
+                    fwhm_vect = [fits_vect[i]['fwhm'] for i in range(n)]
+                    fwhm = np.array(fwhm_vect)
+                    fwhm = fwhm.flatten()
+                    if verbose:
+                        print("FWHM per channel:")
+                        print_precision(fwhm)
+                # Replace outliers if needed
+                if correct_outliers:
+                    if np.sum(np.isnan(fwhm)) > 0:
+                        for f in range(n):
+                            if np.isnan(fwhm[f]) and f != 0 and f != n-1:
+                                fwhm[f] = np.nanmean(np.array([fwhm[f-1],
+                                                               fwhm[f+1]]))
+                            elif np.isnan(fwhm[f]):
+                                msg = "2D fit failed for first or last channel."
+                                msg += " Try other parameters?"
+                                raise ValueError(msg)
+        elif len(fwhm) != array.shape[0]:
+            msg = "If fwhm is a list/1darray it should have a length of {}"
+            raise ValueError(msg.format(array.shape[0]))
+
         array_out = []
         fwhm_flux = np.zeros(n)
 
@@ -809,3 +804,9 @@ def normalize_psf(array, fwhm='fit', size=None, threshold=None, mask_core=None,
             return array_out, fwhm_flux, fwhm
         else:
             return array_out
+
+    else:
+        msg = "Input psf should be 2D or 3D. If of higher dimension, either use"
+        msg += " ``vip_hci.preproc.cube_collapse`` first, or loop on the "
+        msg += "temporal axis."
+        raise ValueError(msg.format(array.shape[0]))

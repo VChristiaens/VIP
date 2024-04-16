@@ -2,9 +2,7 @@
 """Module for the post-processing LLSG algorithm."""
 
 __author__ = "Thomas Bédrine"
-__all__ = [
-    "LLSGBuilder",
-]
+__all__ = ["LLSGBuilder", "PPLLSG"]
 
 from typing import Optional
 from dataclasses import dataclass
@@ -14,13 +12,12 @@ from dataclass_builder import dataclass_builder
 
 from .dataset import Dataset
 from .postproc import PostProc
-from ..psfsub import llsg, LLSGParams
+from ..psfsub import llsg, LLSG_Params
 from ..config.utils_conf import algo_calculates_decorator as calculates
-from ..var.object_utils import setup_parameters
 
 
 @dataclass
-class PPLLSG(PostProc, LLSGParams):
+class PPLLSG(PostProc, LLSG_Params):
     """
     Post-processing LLSG algorithm.
 
@@ -66,6 +63,7 @@ class PPLLSG(PostProc, LLSGParams):
             ``vip_hci.preproc.frame_rotate``)
 
         """
+        self.snr_map = None
         self._update_dataset(dataset)
         self._explicit_dataset()
 
@@ -78,9 +76,11 @@ class PPLLSG(PostProc, LLSGParams):
         if self.dataset.fwhm is None:
             raise ValueError("`fwhm` has not been set")
 
-        params_dict = self._create_parameters_dict(LLSGParams)
+        params_dict = self._create_parameters_dict(LLSG_Params)
 
-        res = llsg(algo_params=self, **rot_options)
+        all_params = {"algo_params": self, **rot_options}
+
+        res = llsg(**all_params)
         self.frame_l = res[3]
         self.frame_s = res[4]
         self.frame_g = res[5]

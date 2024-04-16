@@ -2,9 +2,7 @@
 """Module for the post-processing ANDROMEDA algorithm."""
 
 __author__ = "Thomas Bédrine, Carlos Alberto Gomez Gonzalez, Ralf Farkas"
-__all__ = [
-    "AndroBuilder",
-]
+__all__ = ["AndroBuilder", "PPAndromeda"]
 
 from typing import Optional
 from dataclasses import dataclass
@@ -14,12 +12,12 @@ from dataclass_builder import dataclass_builder
 
 from .dataset import Dataset
 from .postproc import PostProc
-from ..invprob import andromeda, AndroParams
+from ..invprob import andromeda, ANDROMEDA_Params
 from ..config.utils_conf import algo_calculates_decorator as calculates
 
 
 @dataclass
-class PPAndromeda(PostProc, AndroParams):
+class PPAndromeda(PostProc, ANDROMEDA_Params):
     """Post-processing ANDROMEDA algorithm."""
 
     _algo_name: str = "andromeda"
@@ -62,6 +60,7 @@ class PPAndromeda(PostProc, AndroParams):
             Print some parameter values for control.
 
         """
+        self.snr_map = None
         self._update_dataset(dataset)
 
         if self.dataset.fwhm is None:
@@ -72,8 +71,9 @@ class PPAndromeda(PostProc, AndroParams):
         if nproc is not None:
             self.nproc = nproc
 
-        params_dict = self._create_parameters_dict(AndroParams)
-        res = andromeda(algo_params=self)
+        params_dict = self._create_parameters_dict(ANDROMEDA_Params)
+        all_params = {"algo_params": self}
+        res = andromeda(**all_params)
 
         self.contrast_map = res[0]
         self.likelihood_map = res[5]

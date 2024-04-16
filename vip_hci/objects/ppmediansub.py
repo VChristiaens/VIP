@@ -2,7 +2,7 @@
 """Module for the post-processing median subtraction algorithm."""
 
 __author__ = "Thomas Bédrine"
-__all__ = ["MedianBuilder"]
+__all__ = ["MedianBuilder", "PPMedianSub"]
 
 from typing import Optional
 from dataclasses import dataclass
@@ -12,12 +12,12 @@ from dataclass_builder import dataclass_builder
 
 from .dataset import Dataset
 from .postproc import PostProc
-from ..psfsub import median_sub, MedsubParams
+from ..psfsub import median_sub, MEDIAN_SUB_Params
 from ..config.utils_conf import algo_calculates_decorator as calculates
 
 
 @dataclass
-class PPMedianSub(PostProc, MedsubParams):
+class PPMedianSub(PostProc, MEDIAN_SUB_Params):
     """
     Object used as a wrapper for the ``vip_hci.psfsub.median_sub``.
 
@@ -72,6 +72,7 @@ class PPMedianSub(PostProc, MedsubParams):
             ``vip_hci.preproc.frame_rotate``).
 
         """
+        self.snr_map = None
         self._update_dataset(dataset)
 
         if self.mode == "annular" and self.dataset.fwhm is None:
@@ -85,9 +86,11 @@ class PPMedianSub(PostProc, MedsubParams):
 
         self._explicit_dataset()
 
-        params_dict = self._create_parameters_dict(MedsubParams)
+        params_dict = self._create_parameters_dict(MEDIAN_SUB_Params)
 
-        res = median_sub(algo_params=self, **rot_options)
+        all_params = {"algo_params": self, **rot_options}
+
+        res = median_sub(**all_params)
 
         self.cube_residuals, self.cube_residuals_der, self.frame_final = res
 

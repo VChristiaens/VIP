@@ -1,5 +1,4 @@
 #! /usr/bin/env python
-
 """
 Module with the MCMC (``emcee``) sampling for NEGFC parameter estimation.
 
@@ -9,17 +8,26 @@ Module with the MCMC (``emcee``) sampling for NEGFC parameter estimation.
    | *MNRAS, Volume 502, Issue 4, pp. 6117-6139*
    | `https://arxiv.org/abs/2102.10288
      <https://arxiv.org/abs/2102.10288>`_
-     
+
 .. [FOR13]
    | Foreman-Mackey et al. 2013
    | **emcee: The MCMC Hammer**
    | *PASP, Volume 125, Issue 925, p. 306*
    | `https://arxiv.org/abs/1202.3665
      <https://arxiv.org/abs/1202.3665>`_
-     
+
+.. [QUA15]
+   | Quanz et al. 2015
+   | **Confirmation and Characterization of the Protoplanet HD 100546 b—Direct
+   Evidence for Gas Giant Planet Formation at 50 AU**
+   | *Astronomy & Astrophysics, Volume 807, p. 64*
+   | `https://arxiv.org/abs/1412.5173
+     <https://arxiv.org/abs/1412.5173>`_
+
 .. [WER17]
    | Wertz et al. 2017
-   | **VLT/SPHERE robust astrometry of the HR8799 planets at milliarcsecond-level accuracy. Orbital architecture analysis with PyAstrOFit**
+   | **VLT/SPHERE robust astrometry of the HR8799 planets at milliarcsecond
+   level accuracy. Orbital architecture analysis with PyAstrOFit**
    | *Astronomy & Astrophysics, Volume 598, p. 83*
    | `https://arxiv.org/abs/1610.04014
      <https://arxiv.org/abs/1610.04014>`_
@@ -30,10 +38,8 @@ Module with the MCMC (``emcee``) sampling for NEGFC parameter estimation.
    | *Comm. App. Math. Comp. Sci., Vol. 5, Issue 1, pp. 65-80.*
    | `https://ui.adsabs.harvard.edu/abs/2010CAMCS...5...65G
      <https://ui.adsabs.harvard.edu/abs/2010CAMCS...5...65G>`_
-     
+
 """
-
-
 from ..fits import write_fits
 __author__ = 'O. Wertz, Carlos Alberto Gomez Gonzalez, V. Christiaens'
 __all__ = ['mcmc_negfc_sampling',
@@ -64,7 +70,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 def lnprior(param, bounds, force_rPA=False):
-    """ Define the prior log-function.
+    """Define the prior log-function.
 
     Parameters
     ----------
@@ -81,8 +87,8 @@ def lnprior(param, bounds, force_rPA=False):
     out: float.
         0 if all the model parameters satisfy the prior conditions defined here.
         -np.inf if at least one model parameters is out of bounds.
-    """
 
+    """
     if not force_rPA:
         try:
             _ = param[0]
@@ -120,7 +126,7 @@ def lnlike(param, cube, angs, psf_norm, fwhm, annulus_width, ncomp,
            imlib='vip-fft', interpolation='lanczos4', collapse='median',
            algo_options={}, weights=None, transmission=None, mu_sigma=True,
            sigma='spe+pho', force_rPA=False, debug=False):
-    """ Define the likelihood log-function.
+    """Define the log-likelihood function.
 
     Parameters
     ----------
@@ -163,19 +169,38 @@ def lnlike(param, cube, angs, psf_norm, fwhm, annulus_width, ncomp,
         * ``spat-standard``: spatial mean centering plus scaling pixel values
           to unit variance (spatially).
 
-        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve 
-        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this 
-        involves a sort of c-ADI preprocessing, which (i) can be dangerous for 
-        datasets with low amount of rotation (strong self-subtraction), and (ii) 
+        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve
+        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this
+        involves a sort of c-ADI preprocessing, which (i) can be dangerous for
+        datasets with low amount of rotation (strong self-subtraction), and (ii)
         should probably be referred to as ARDI (i.e. not RDI stricto sensu).
     algo: vip function, optional {pca_annulus, pca_annular}
         Post-processing algorithm used.
     delta_rot: float, optional
         If algo is set to pca_annular, delta_rot is the angular threshold used
         to select frames in the PCA library (see description of pca_annular).
-    fmerit : {'sum', 'stddev'}, string optional
-        Chooses the figure of merit to be used. stddev works better for close in
-        companions sitting on top of speckle noise.
+    fmerit : {'sum', 'stddev', 'hessian'}, string optional
+        If mu_sigma is not provided nor set to True, this parameter determines
+        which figure of merit to be used:
+
+            * ``sum``: minimizes the sum of absolute residual intensities in the
+            aperture defined with `initial_state` and `aperture_radius`. More
+            details in [WER17]_.
+
+            * ``stddev``: minimizes the standard deviation of residual
+            intensities in the aperture defined with `initial_state` and
+            `aperture_radius`. More details in [WER17]_.
+
+            * ``hessian``: minimizes the sum of absolute values of the
+            determinant of the Hessian matrix calculated for each of the 4
+            pixels encompassing the first guess location defined with
+            `initial_state`. More details in [QUA15]_.
+
+        From experience: ``sum`` is more robust for high SNR companions (but
+        rather consider setting mu_sigma=True), while ``stddev`` tend to be more
+        reliable in presence of strong residual speckle noise. ``hessian`` is
+        expected to be more reliable in presence of extended signals around the
+        companion location.
     imlib : str, optional
         See the documentation of the ``vip_hci.preproc.frame_shift`` function.
     interpolation : str, optional
@@ -311,8 +336,8 @@ def lnprob(param, bounds, cube, angs, psf_norm, fwhm, annulus_width, ncomp,
            imlib='vip-fft', interpolation='lanczos4', collapse='median',
            algo_options={}, weights=None, transmission=None, mu_sigma=True,
            sigma='spe+pho', force_rPA=False, display=False):
-    """ Define the probability log-function as the sum between the prior and
-    likelihood log-funtions.
+    """Define the log-probability function as the sum between the prior and\
+    log-likelihood funtions.
 
     Parameters
     ----------
@@ -365,14 +390,33 @@ def lnprob(param, bounds, cube, angs, psf_norm, fwhm, annulus_width, ncomp,
         * ``spat-standard``: spatial mean centering plus scaling pixel values
           to unit variance (spatially).
 
-        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve 
-        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this 
-        involves a sort of c-ADI preprocessing, which (i) can be dangerous for 
-        datasets with low amount of rotation (strong self-subtraction), and (ii) 
+        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve
+        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this
+        involves a sort of c-ADI preprocessing, which (i) can be dangerous for
+        datasets with low amount of rotation (strong self-subtraction), and (ii)
         should probably be referred to as ARDI (i.e. not RDI stricto sensu).
-    fmerit : {'sum', 'stddev'}, string optional
-        Chooses the figure of merit to be used. stddev works better for close in
-        companions sitting on top of speckle noise.
+    fmerit : {'sum', 'stddev', 'hessian'}, string optional
+        If mu_sigma is not provided nor set to True, this parameter determines
+        which figure of merit to be used:
+
+            * ``sum``: minimizes the sum of absolute residual intensities in the
+            aperture defined with `initial_state` and `aperture_radius`. More
+            details in [WER17]_.
+
+            * ``stddev``: minimizes the standard deviation of residual
+            intensities in the aperture defined with `initial_state` and
+            `aperture_radius`. More details in [WER17]_.
+
+            * ``hessian``: minimizes the sum of absolute values of the
+            determinant of the Hessian matrix calculated for each of the 4
+            pixels encompassing the first guess location defined with
+            `initial_state`. More details in [QUA15]_.
+
+        From experience: ``sum`` is more robust for high SNR companions (but
+        rather consider setting mu_sigma=True), while ``stddev`` tend to be more
+        reliable in presence of strong residual speckle noise. ``hessian`` is
+        expected to be more reliable in presence of extended signals around the
+        companion location.
     imlib : str, optional
         See the documentation of the ``vip_hci.preproc.frame_rotate`` function.
     interpolation : str, optional
@@ -449,12 +493,12 @@ def mcmc_negfc_sampling(cube, angs, psfn, initial_state, algo=pca_annulus,
                         ac_c=50, ac_count_thr=3, nproc=1, output_dir='results/',
                         output_file=None, display=False, verbosity=0,
                         save=False):
-    r""" Runs an affine invariant mcmc sampling algorithm in order to determine
-    the position and the flux of the planet using the 'Negative Fake Companion'
-    technique. The result of this procedure is a chain with the samples from the
-    posterior distributions of each of the 3 parameters.
+    r"""Run an affine invariant mcmc sampling algorithm to determine position
+    and flux of a companion using the 'Negative Fake Companion' technique.
 
-    This technique can be summarized as follows:
+    The result of this procedure is a chain with the samples from the posterior
+    distributions of each of the 3 parameters. This technique can be summarized
+    as follows:
     1) We inject a negative fake companion (one candidate) at a given position
     and characterized by a given flux, both close to the expected values.
     2) We run PCA on an full annulus which pass through the initial guess,
@@ -485,12 +529,12 @@ def mcmc_negfc_sampling(cube, angs, psfn, initial_state, algo=pca_annulus,
     Speed tricks:
         - crop your input cube to a size such as to just include the annulus on
           which the PCA is performed;
-        - set ``imlib='opencv'`` (much faster image rotations, BUT at the expense
+        - set ``imlib='opencv'`` (much faster image rotation, at the expense
           of flux conservation);
         - increase ``nproc`` (if your machine allows);
-        - reduce ``ac_c`` (or increase ``rhat_threshold`` if ``conv_test='gb'``) 
+        - reduce ``ac_c`` (or increase ``rhat_threshold`` if ``conv_test='gb'``)
           for a faster convergence);
-        - reduce ``niteration_limit`` to force the sampler to stop even if it 
+        - reduce ``niteration_limit`` to force the sampler to stop even if it
           has not reached convergence.
 
     Parameters
@@ -541,11 +585,29 @@ def mcmc_negfc_sampling(cube, angs, psfn, initial_state, algo=pca_annulus,
         residual (mostly whitened) speckle noise, or 'spe+pho' for both.
     force_rPA: bool, optional
         Whether to only search for optimal flux, provided (r,PA).
-    fmerit : {'sum', 'stddev'}, string optional
+    fmerit : {'sum', 'stddev', 'hessian'}, string optional
         If mu_sigma is not provided nor set to True, this parameter determines
-        which figure of merit to be used among the 2 possibilities implemented
-        in [WER17]_. 'stddev' may work well for point like sources surrounded by 
-        extended signals.
+        which figure of merit to be used:
+
+            * ``sum``: minimizes the sum of absolute residual intensities in the
+            aperture defined with `initial_state` and `aperture_radius`. More
+            details in [WER17]_.
+
+            * ``stddev``: minimizes the standard deviation of residual
+            intensities in the aperture defined with `initial_state` and
+            `aperture_radius`. More details in [WER17]_.
+
+            * ``hessian``: minimizes the sum of absolute values of the
+            determinant of the Hessian matrix calculated for each of the 4
+            pixels encompassing the first guess location defined with
+            `initial_state`. More details in [QUA15]_.
+
+        From experience: ``sum`` is more robust for high SNR companions (but
+        rather consider setting mu_sigma=True), while ``stddev`` tend to be more
+        reliable in presence of strong residual speckle noise. ``hessian`` is
+        expected to be more reliable in presence of extended signals around the
+        companion location.
+
     cube_ref : 3d or 4d numpy ndarray, or list of 3d ndarray, optional
         Reference library cube for Reference Star Differential Imaging. Should
         be 3d, except if the input cube is 4d, in which case it can either be a
@@ -568,10 +630,10 @@ def mcmc_negfc_sampling(cube, angs, psfn, initial_state, algo=pca_annulus,
         * ``spat-standard``: spatial mean centering plus scaling pixel values
           to unit variance (spatially).
 
-        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve 
-        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this 
-        involves a sort of c-ADI preprocessing, which (i) can be dangerous for 
-        datasets with low amount of rotation (strong self-subtraction), and (ii) 
+        DISCLAIMER: Using ``temp-mean`` or ``temp-standard`` scaling can improve
+        the speckle subtraction for ASDI or (A)RDI reductions. Nonetheless, this
+        involves a sort of c-ADI preprocessing, which (i) can be dangerous for
+        datasets with low amount of rotation (strong self-subtraction), and (ii)
         should probably be referred to as ARDI (i.e. not RDI stricto sensu).
     delta_rot: float, optional
         If algo is set to pca_annular, delta_rot is the angular threshold used
@@ -693,6 +755,7 @@ def mcmc_negfc_sampling(cube, angs, psfn, initial_state, algo=pca_annulus,
 
     The parameter ``rhat_threshold`` can be a numpy.array with individual
     threshold value for each model parameter.
+
     """
     if verbosity > 0:
         start_time = time_ini()
@@ -1023,7 +1086,7 @@ def mcmc_negfc_sampling(cube, angs, psfn, initial_state, algo=pca_annulus,
 
 def chain_zero_truncated(chain):
     """
-    Return the Markov chain with the dimension: walkers x steps* x parameters,
+    Return the Markov chain with the dimension: walkers x steps* x parameters,\
     where steps* is the last step before having 0 (not yet constructed chain).
 
     Parameters
@@ -1046,7 +1109,7 @@ def chain_zero_truncated(chain):
 
 def show_walk_plot(chain, save=False, output_dir='', **kwargs):
     """
-    Display or save a figure showing the path of each walker during the MCMC run
+    Display or save figure showing the path of each walker during the MCMC run.
 
     Parameters
     ----------
@@ -1099,13 +1162,11 @@ def show_walk_plot(chain, save=False, output_dir='', **kwargs):
     if save:
         plt.savefig(output_dir+'walk_plot.pdf')
         plt.close(fig)
-    else:
-        plt.show()
 
 
 def show_corner_plot(chain, burnin=0.5, save=False, output_dir='', **kwargs):
     """
-    Display or save a figure showing the corner plot (pdfs + correlation plots)
+    Display or save a figure showing the corner plot (pdfs + correlation plots).
 
     Parameters
     ----------
@@ -1125,8 +1186,8 @@ def show_corner_plot(chain, burnin=0.5, save=False, output_dir='', **kwargs):
 
     Returns
     -------
-    None 
-        (Displays the figure or create a pdf file named walk_plot.pdf in the 
+    None
+        (Displays the figure or create a pdf file named walk_plot.pdf in the
         working directory).
 
     Raises
@@ -1156,8 +1217,6 @@ def show_corner_plot(chain, burnin=0.5, save=False, output_dir='', **kwargs):
     if save:
         plt.savefig(output_dir+'corner_plot.pdf')
         plt.close(fig)
-    else:
-        plt.show()
 
 
 def confidence(isamples, cfd=68.27, bins=100, gaussian_fit=False, weights=None,
@@ -1218,14 +1277,13 @@ def confidence(isamples, cfd=68.27, bins=100, gaussian_fit=False, weights=None,
     Returns
     -------
     out: A 2 elements tuple with either:
-        [gaussian_fit=False] i) the highly probable solutions (dictionary), 
+        [gaussian_fit=False] i) the highly probable solutions (dictionary),
             ii) the respective confidence interval (dict.);
-        [gaussian_fit=True] i) the center of the best-fit 1d Gaussian 
-            distributions (tuple of 3 floats), and ii) their standard deviation, 
+        [gaussian_fit=True] i) the center of the best-fit 1d Gaussian
+            distributions (tuple of 3 floats), and ii) their standard deviation,
             for each parameter
 
     """
-
     try:
         l = isamples.shape[1]
         if l == 1:
@@ -1257,9 +1315,9 @@ def confidence(isamples, cfd=68.27, bins=100, gaussian_fit=False, weights=None,
     if cfd == 100:
         cfd = 99.9
 
-    #########################################
-    ##  Determine the confidence interval  ##
-    #########################################
+    #######################################
+    #  Determine the confidence interval  #
+    #######################################
     if gaussian_fit:
         mu = np.zeros(l)
         sigma = np.zeros_like(mu)
@@ -1558,9 +1616,9 @@ def confidence(isamples, cfd=68.27, bins=100, gaussian_fit=False, weights=None,
             for i, lab in enumerate(labels):
                 print('{}: {} +-{}'.format(lab, mu[i], sigma[i]))
 
-    ##############################################
-    ##  Write inference results in a text file  ##
-    ##############################################
+    ############################################
+    #  Write inference results in a text file  #
+    ############################################
     if save:
         with open(output_dir+output_file, "w") as f:
             f.write('###########################\n')

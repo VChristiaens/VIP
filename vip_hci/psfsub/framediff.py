@@ -2,38 +2,81 @@
 """Module with a frame differencing algorithm for ADI post-processing."""
 
 __author__ = "Carlos Alberto Gomez Gonzalez, Thomas Bédrine"
-__all__ = ["frame_diff", "FrameDiffParams"]
+__all__ = ["frame_diff", "FRAME_DIFF_Params"]
 
 import numpy as np
 import pandas as pn
 from hciplot import plot_frames
 from multiprocessing import cpu_count
 from dataclasses import dataclass
-from strenum import LowercaseStrEnum as LowEnum
+from typing import List
+from enum import Enum
 from sklearn.metrics import pairwise_distances
+from .utils_pca import pca_annulus
 from ..var import get_annulus_segments
-from ..var.object_utils import setup_parameters, separate_kwargs_dict
-from ..var.paramenum import Metric, Imlib, Interpolation, Collapse
-from ..preproc import cube_derotate, cube_collapse, check_pa_vector
+from ..config.utils_param import setup_parameters, separate_kwargs_dict
+from ..config.paramenum import Metric, Imlib, Interpolation, Collapse, ALGO_KEY
 from ..config import time_ini, timing
 from ..config.utils_conf import pool_map, iterable
-from .utils_pca import pca_annulus
+from ..preproc import cube_derotate, cube_collapse, check_pa_vector
 from ..preproc.derotation import _find_indices_adi, _define_annuli
 
 
 @dataclass
-class FrameDiffParams:
+class FRAME_DIFF_Params:
     """
     Set of parameters for the frame differencing module.
 
+    See the function `frame_diff` below for the documentation.
+    """
+
+    cube: np.ndarray = None
+    angle_list: np.ndarray = None
+    fwhm: float = 4
+    metric: Enum = Metric.MANHATTAN
+    dist_threshold: int = 50
+    n_similar: int = None
+    delta_rot: int = 0.5
+    radius_int: int = 2
+    asize: int = 4
+    ncomp: int = None
+    imlib: Enum = Imlib.VIPFFT
+    interpolation: Enum = Interpolation.LANCZOS4
+    collapse: Enum = Collapse.MEDIAN
+    nproc: int = 1
+    verbose: bool = True
+    debug: bool = False
+    full_output: bool = False
+
+
+def frame_diff(*all_args: List, **all_kwargs: dict):
+    """Run the frame differencing algorithm.
+
+    It uses vector distance (depending on
+    ``metric``), using separately the pixels from different annuli of ``asize``
+    width, to create pairs of most similar images. Then it performs pair-wise
+    subtraction and combines the residuals.
+
     Parameters
+    ----------
+    all_args: list, optional
+        Positionnal arguments for the frame diff algorithm. Full list of parameters
+        below.
+    all_kwargs: dictionary, optional
+        Mix of keyword arguments that can initialize a FrameDiffParams and the optional
+        'rot_options' dictionnary, with keyword values for "border_mode", "mask_val",
+        "edge_blend", "interp_zeros", "ker" (see documentation of
+        ``vip_hci.preproc.frame_rotate``). Can also contain a FrameDiffParams named as
+        `algo_params`.
+
+    Frame differencing parameters
     ----------
     cube : numpy ndarray, 3d
         Input cube.
     angle_list : numpy ndarray, 1d
         Corresponding parallactic angle for each frame.
     fwhm : float, optional
-        Known size of the FHWM in pixels to be used. Default is 4.
+        Known size of the FWHM in pixels to be used. Default is 4.
     metric : str, optional
         Distance metric to be used ('cityblock', 'cosine', 'euclidean', 'l1',
         'l2', 'manhattan', 'correlation', etc). It uses the scikit-learn
@@ -72,47 +115,6 @@ class FrameDiffParams:
     debug : bool, optional
         If True the distance matrices will be plotted and additional information
         will be given.
-    """
-
-    cube: np.ndarray = None
-    angle_list: np.ndarray = None
-    fwhm: float = 4
-    metric: LowEnum = Metric.MANHATTAN
-    dist_threshold: int = 50
-    n_similar: int = None
-    delta_rot: int = 0.5
-    radius_int: int = 2
-    asize: int = 4
-    ncomp: int = None
-    imlib: LowEnum = Imlib.VIPFFT
-    interpolation: LowEnum = Interpolation.LANCZOS4
-    collapse: LowEnum = Collapse.MEDIAN
-    nproc: int = 1
-    verbose: bool = True
-    debug: bool = False
-    full_output: bool = False
-
-
-def frame_diff(
-    algo_params: FrameDiffParams = None,
-    **all_kwargs,
-):
-    """Run the frame differencing algorithm.
-
-    It uses vector distance (depending on
-    ``metric``), using separately the pixels from different annuli of ``asize``
-    width, to create pairs of most similar images. Then it performs pair-wise
-    subtraction and combines the residuals.
-
-    Parameters
-    ----------
-    algo_params: FrameDiffParams or PostProc
-        Dataclass retaining all the needed parameters for frame differencing.
-    all_kwargs: dictionary, optional
-        Mix of the parameters that can initialize an algo_params and the optional
-        'rot_options' dictionnary, with keyword values for "border_mode", "mask_val",
-        "edge_blend", "interp_zeros", "ker" (see documentation of
-        ``vip_hci.preproc.frame_rotate``)
 
     Returns
     -------
@@ -122,10 +124,17 @@ def frame_diff(
 
     # Separating the parameters of the ParamsObject from the optionnal rot_options
     class_params, rot_options = separate_kwargs_dict(
-        initial_kwargs=all_kwargs, parent_class=FrameDiffParams
+        initial_kwargs=all_kwargs, parent_class=FRAME_DIFF_Params
     )
+
+    # Extracting the object of parameters (if any)
+    algo_params = None
+    if ALGO_KEY in rot_options.keys():
+        algo_params = rot_options[ALGO_KEY]
+        del rot_options[ALGO_KEY]
+
     if algo_params is None:
-        algo_params = FrameDiffParams(**class_params)
+        algo_params = FRAME_DIFF_Params(*all_args, **class_params)
 
     global array
     array = algo_params.cube

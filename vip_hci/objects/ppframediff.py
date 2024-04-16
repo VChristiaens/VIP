@@ -2,9 +2,7 @@
 """Module for the post-processing frame differencing algorithm."""
 
 __author__ = "Thomas Bédrine"
-__all__ = [
-    "FrameDiffBuilder",
-]
+__all__ = ["FrameDiffBuilder", "PPFrameDiff"]
 
 from dataclasses import dataclass
 from typing import Optional
@@ -13,12 +11,12 @@ from dataclass_builder import dataclass_builder
 
 from .dataset import Dataset
 from .postproc import PostProc
-from ..psfsub import frame_diff, FrameDiffParams
+from ..psfsub import frame_diff, FRAME_DIFF_Params
 from ..config.utils_conf import algo_calculates_decorator as calculates
 
 
 @dataclass
-class PPFrameDiff(PostProc, FrameDiffParams):
+class PPFrameDiff(PostProc, FRAME_DIFF_Params):
     """
     Post-processing frame differencing algorithm.
 
@@ -60,6 +58,7 @@ class PPFrameDiff(PostProc, FrameDiffParams):
             ``vip_hci.preproc.frame_rotate``).
 
         """
+        self.snr_map = None
         self._update_dataset(dataset)
 
         if self.dataset.fwhm is None:
@@ -72,9 +71,11 @@ class PPFrameDiff(PostProc, FrameDiffParams):
             self.full_output = full_output
 
         self._explicit_dataset()
-        params_dict = self._create_parameters_dict(FrameDiffParams)
+        params_dict = self._create_parameters_dict(FRAME_DIFF_Params)
 
-        res = frame_diff(algo_params=self, **rot_options)
+        all_params = {"algo_params": self, **rot_options}
+
+        res = frame_diff(**all_params)
 
         self.frame_final = res
 

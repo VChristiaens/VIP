@@ -1,11 +1,10 @@
 #! /usr/bin/env python
-
 """
 Distance and correlation between images.
 
 .. [WAN04]
    | Wang et al. 2004
-   | **Image Quality Assessment: From Error Visibility to Structural 
+   | **Image Quality Assessment: From Error Visibility to Structural
      Similarity**
    | *IEEE Transactions on Image Processing, Volume 13, Issue 4, pp. 600-612*
    | `http://www.cns.nyu.edu/pub/eero/wang03-reprint.pdf
@@ -13,31 +12,27 @@ Distance and correlation between images.
 
 .. [GRE16]
    | Greco & Brandt 2016
-   | **The Measurement, Treatment, and Impact of Spectral Covariance and 
+   | **The Measurement, Treatment, and Impact of Spectral Covariance and
      Bayesian Priors in Integral-field Spectroscopy of Exoplanets**
    | *The Astrophysical Journal, Volume 833, Issue 1, p. 134*
    | `https://arxiv.org/abs/1602.00691
      <https://arxiv.org/abs/1602.00691>`_
-     
+
 """
 
 __author__ = 'Carlos Alberto Gomez Gonzalez; V. Christiaens'
 __all__ = ['cube_distance',
            'spectral_correlation']
 
-from astropy.stats import gaussian_fwhm_to_sigma
 import numpy as np
-import scipy.stats
-from scipy.optimize import curve_fit
+from scipy.stats import pearsonr, spearmanr
+from astropy.stats import gaussian_fwhm_to_sigma
 from matplotlib import pyplot as plt
-try:
-    # for skimage version >= '0.16' use skimage.metrics.structural_similarity
-    from skimage.metrics import structural_similarity as ssim
-except BaseException:
-    # before skimage version '0.16' use skimage.measure.compare_ssim
-    from skimage.measure import compare_ssim as ssim
-from ..var import get_annulus_segments, get_circle
+from scipy.optimize import curve_fit
+from skimage.metrics import structural_similarity as ssim
+
 from ..config import vip_figsize
+from ..var import get_annulus_segments, get_circle
 
 
 def cube_distance(array, frame, mode='full', dist='sad', inradius=None,
@@ -55,12 +50,12 @@ def cube_distance(array, frame, mode='full', dist='sad', inradius=None,
 
     The SAD, MSE and Ecuclidean criteria are dissimilarity criteria, which
     means that 0 is perfect similarity.
-    The Pearson (resp. Spearman) coefficients, vary between -1 and +1 with 0 
+    The Pearson (resp. Spearman) coefficients, vary between -1 and +1 with 0
     implying no correlation. Correlations of -1 or +1 imply an exact
     linear (resp. monotonic) relationship.
-    The Structural Similarity Index was proposed in [WAN04]_. SSIM varies 
-    between -1 and 1, where 1 means perfect similarity. SSIM attempts to model 
-    the perceived change in the structural information of the image. The mean 
+    The Structural Similarity Index was proposed in [WAN04]_. SSIM varies
+    between -1 and 1, where 1 means perfect similarity. SSIM attempts to model
+    the perceived change in the structural information of the image. The mean
     SSIM is reported.
 
     Parameters
@@ -133,10 +128,10 @@ def cube_distance(array, frame, mode='full', dist='sad', inradius=None,
         elif dist == 'mse':
             lista.append((np.sum((frame_ref - framei)**2))/len(frame_ref))
         elif dist == 'pearson':
-            pears, _ = scipy.stats.pearsonr(frame_ref.ravel(), framei.ravel())
+            pears, _ = pearsonr(frame_ref.ravel(), framei.ravel())
             lista.append(pears)
         elif dist == 'spearman':
-            spear, _ = scipy.stats.spearmanr(frame_ref.ravel(), framei.ravel())
+            spear, _ = spearmanr(frame_ref.ravel(), framei.ravel())
             lista.append(spear)
         elif dist == 'ssim':
             mean_ssim = ssim(frame_ref, framei, win_size=7,
@@ -158,9 +153,11 @@ def cube_distance(array, frame, mode='full', dist='sad', inradius=None,
                       colors='green', linestyles='dashed', lw=2, alpha=0.8,
                       label='Frame '+str(frame))
         ax.hlines(median_cor, xmin=-1, xmax=n+1, colors='purple', alpha=0.3,
-                  linestyles='dashed', label='Median value : '+str(median_cor))
+                  linestyles='dashed',
+                  label='Median value : {:.3f}'.format(median_cor))
         ax.hlines(mean_cor, xmin=-1, xmax=n+1, colors='green', alpha=0.3,
-                  linestyles='dashed', label='Mean value : '+str(mean_cor))
+                  linestyles='dashed',
+                  label='Mean value : {:.3f}'.format(mean_cor))
 
         x = range(len(lista))
         ax.plot(x, lista, '-', alpha=0.6, color='#1f77b4')
