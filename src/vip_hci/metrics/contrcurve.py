@@ -36,7 +36,7 @@ def contrast_curve(
     algo,
     sigma=5,
     nbranch=1,
-    theta=0,
+    theta=None,
     inner_rad=1,
     fc_rad_sep=3,
     noise_sep=1,
@@ -95,7 +95,7 @@ def contrast_curve(
         is tested individually.
     theta : float, optional
         Angle in degrees for rotating the position of the first branch that by
-        default is located at zero degrees. Theta counts counterclockwise from
+        default is located midway in the wedge range. Theta counts anticlockwise from
         the positive x axis. When working on a wedge, make sure that theta is
         located inside of it.
     inner_rad : int, optional
@@ -588,7 +588,7 @@ def throughput(
     fwhm,
     algo,
     nbranch=1,
-    theta=0,
+    theta=None,
     inner_rad=1,
     fc_rad_sep=3,
     wedge=(0, 360),
@@ -627,7 +627,7 @@ def throughput(
         is tested individually.
     theta : float, optional
         Angle in degrees for rotating the position of the first branch that by
-        default is located at zero degrees. Theta counts counterclockwise from
+        default is located midway in the wedge range. Theta counts anticlockwise from
         the positive x axis.
     inner_rad : int, optional
         Innermost radial distance to be considered in terms of FWHM. Should be
@@ -727,11 +727,17 @@ def throughput(
             raise TypeError("Parameter `algo` must be a callable function")
         if not isinstance(inner_rad, int):
             raise TypeError("inner_rad must be an integer")
+        
         angular_range = wedge[1] - wedge[0]
-        if nbranch > 1 and angular_range < 360:
-            msg = "Only a single branch is allowed when working on a wedge"
-            raise RuntimeError(msg)
-
+        if wedge != (0, 360) and (nbranch == 1):
+            if not theta: # not theta value provided
+                theta = (wedge[0] + wedge[1]) / 2     
+        else:
+            if not theta:
+                theta = wedge[0]
+        if not wedge[0] <= theta <= wedge[1]:
+            raise TypeError("Theta value is out of the wedge range")
+        
     if isinstance(fwhm, (np.ndarray, list)):
         fwhm_med = np.median(fwhm)
     else:

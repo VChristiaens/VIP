@@ -25,7 +25,8 @@ def speckle_noise_uncertainty(cube, p_true, angle_range, derot_angles, algo,
                               wedge=None, weights=None, force_rPA=False,
                               ndet=None, nproc=None, simplex_options=None,
                               bins=None, save=False, output=None, verbose=True,
-                              full_output=True, plot=False, sigma_trim=None):
+                              full_output=True, plot=False, sigma_trim=None,
+                              inc=0, theta_a=0):
     """
     Step-by-step procedure used to determine the speckle noise uncertainty\
     associated to the parameters of a companion candidate.
@@ -164,6 +165,12 @@ def speckle_noise_uncertainty(cube, p_true, angle_range, derot_angles, algo,
     sigma_trim: float, opt
         If provided, sigma threshold used to trim out outliers before
         considering a Gaussian fit to the histogram of residual deviations.
+    inc: float, opt
+        If non-zero, the test aperture locations will be distributed along an
+        ellipse, described by this inclination.
+    theta_a: float, opt
+        If inc is non-zero, theta_a will be the position angle of the semi-major
+        axis of the ellipse measured counter-clockwise from the positive x axis.
 
     Returns
     -------
@@ -214,6 +221,8 @@ def speckle_noise_uncertainty(cube, p_true, angle_range, derot_angles, algo,
         angle_range = np.linspace(angle_range[0]+delta_theta/2,
                                   angle_range[-1]+delta_theta/2, n_ap,
                                   endpoint=False)
+    else:
+        n_ap = len(angle_range)
 
     if angle_range[0] % 360 == angle_range[-1] % 360:
         angle_range = angle_range[:-1]
@@ -258,11 +267,39 @@ def speckle_noise_uncertainty(cube, p_true, angle_range, derot_angles, algo,
                                     weights=norm_weights,
                                     algo_options=algo_options)
 
-    res = pool_map(nproc, _estimate_speckle_one_angle, iterable(angle_range),
-                   cube_pf, psfn, derot_angles, r_true, f_true, fwhm,
-                   aperture_radius, cube_ref, fmerit, algo, algo_options,
-                   transmission, mu_sigma, weights, force_rPA, ndet,
-                   simplex_options, imlib, interpolation, verbose=verbose)
+    if inc != 0:
+        # determine a and b from test position and provided PA_a
+        dth = theta_true-theta_a  # pa provided with astronomy conventions
+        dth = dth % 360
+        t1 = np.sin(np.deg2rad(dth))**2
+        t2 = np.cos(np.deg2rad(dth))**2 * np.cos(np.deg2rad(inc))**2
+        b = np.sqrt(r_true**2 * (t1 + t2))
+        a = b/np.cos(np.deg2rad(inc))
+
+        # define ellipse through r values
+        r_trues = np.zeros(n_ap)
+        for i, theta in enumerate(angle_range):
+            # convert to angle from ellipse's semi-major axis
+            th = (theta-theta_a) % 360
+            th_rad = np.deg2rad(th)
+            # use general ellipse equation to infer r values
+            num = b**2
+            denum = np.sin(th_rad)**2 + (b**2/a**2)*np.cos(th_rad)**2
+            r_trues[i] = np.sqrt(num/denum)
+
+        res = pool_map(nproc, _estimate_speckle_one_angle,
+                       iterable(angle_range), cube_pf, psfn, derot_angles,
+                       iterable(r_trues), f_true, fwhm, aperture_radius,
+                       cube_ref, fmerit, algo, algo_options, transmission,
+                       mu_sigma, weights, force_rPA, ndet, simplex_options,
+                       imlib, interpolation, verbose=verbose)
+    else:
+        res = pool_map(nproc, _estimate_speckle_one_angle,
+                       iterable(angle_range), cube_pf, psfn, derot_angles,
+                       r_true, f_true, fwhm, aperture_radius, cube_ref, fmerit,
+                       algo, algo_options, transmission, mu_sigma, weights,
+                       force_rPA, ndet,
+                       simplex_options, imlib, interpolation, verbose=verbose)
     residuals = np.array(res)
 
     if opp_ang:  # do opposite angles
